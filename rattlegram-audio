@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 
-from payload import Reassembler, load_cipher, packets
+from payload import MAX_MESSAGE, MAX_PAYLOAD, Reassembler, load_cipher, packets
 
 BIN = Path(__file__).resolve().parent / "bin"
 PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
@@ -70,7 +70,10 @@ def main():
     tx.add_argument("--compress", action="store_true", help="zlib-Kompression aktivieren")
     tx.add_argument("--no-length-limit", action="store_true",
                     help="Einzelpaketlimit aufheben und lange Nachrichten fragmentieren")
-    tx.add_argument("message")
+    source = tx.add_mutually_exclusive_group(required=True)
+    source.add_argument("message", nargs="?")
+    source.add_argument("--file", type=Path, metavar="DATEI",
+                        help="Nachricht als UTF-8 aus einer Datei lesen")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     for mode in (tx, rx):
@@ -85,7 +88,15 @@ def main():
         if not shutil.which("pacat"):
             raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
         if args.mode == "send":
-            frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
+            message = args.message
+            if args.file is not None:
+                limit = MAX_MESSAGE if args.no_length_limit else MAX_PAYLOAD
+                with args.file.open("rb") as source_file:
+                    data = source_file.read(limit + 1)
+                if len(data) > limit:
+                    raise ValueError(f"Die Datei überschreitet das Limit von {limit} UTF-8-Bytes.")
+                message = data.decode("utf-8")
+            frames = list(packets(message, args.compress, cipher, args.no_length_limit))
             return send(frames, args.callsign)
         return listen(cipher)
     except ImportError:

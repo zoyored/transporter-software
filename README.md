@@ -33,6 +33,18 @@ A message can contain 1 to 170 UTF-8 bytes. The call sign must contain 1 to 9
 ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
 which plays them through the system's default audio output.
 
+### Send from a file
+
+```sh
+./rattlegram-audio send --file message.txt DL1ABC
+```
+
+The file must contain UTF-8 text. Leading and trailing spaces, tabs, blank
+lines, and line endings are preserved, including at the end of the file.
+The receiver writes the message followed by its usual output newline.
+`--file` replaces the positional message and works with `--compress`,
+`--encrypt`, and `--no-length-limit`.
+
 ## Test locally without an audio device
 
 ```sh
@@ -90,7 +102,7 @@ The packet header is authenticated as associated data.
 Use `--no-length-limit` to lift the single-packet limit.
 
 ```sh
-./rattlegram-audio send --no-length-limit --compress "$(cat message.txt)" DL1ABC
+./rattlegram-audio send --no-length-limit --compress --file message.txt DL1ABC
 ```
 
 The sender splits longer messages into numbered fragments. The receiver
