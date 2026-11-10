@@ -5,8 +5,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
-from payload import MAX_MESSAGE, Reassembler, load_cipher, packets
+from payload import MAX_FILE, Reassembler, file_packets, load_cipher, packets
 
 BIN = Path(__file__).resolve().parent / "bin"
 PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
@@ -33,8 +34,17 @@ def messages(stream):
         raise ValueError("Decoder lieferte eine unvollständige Nachricht.")
 
 
-def listen(cipher):
-    reassembler = Reassembler()
+def save_file(output, data):
+    with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+        staged = Path(temporary) / "received"
+        staged.write_bytes(data)
+        os.link(staged, output)
+
+
+def listen(cipher, output):
+    if output is not None and os.path.lexists(output):
+        raise ValueError(f"Die Zieldatei existiert bereits: {output}")
+    reassembler = Reassembler(receive_files=output is not None)
     with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
@@ -50,6 +60,9 @@ def listen(cipher):
                             continue
                         if message is None:
                             continue
+                        if output is not None:
+                            save_file(output, message)
+                            return 0
                         sys.stdout.buffer.write(message.encode("utf-8") + b"\n")
                         sys.stdout.buffer.flush()
                     decoder.wait()
@@ -60,33 +73,9 @@ def listen(cipher):
         finally:
             if recorder.poll() is None:
                 recorder.terminate()
+    if output is not None:
+        raise ValueError("Der Audioeingang endete vor dem vollständigen Dateiempfang.")
     return int(bool(recorder_running or recorder.returncode or decoder.returncode))
-
-
-def read_message_file(path):
-    pdf = path.suffix.lower() == ".pdf"
-    if pdf:
-        if not shutil.which("pdftotext"):
-            raise ValueError("Für PDF-Dateien wird pdftotext aus poppler-utils benötigt.")
-        command = ["pdftotext", "-layout", "-enc", "UTF-8", "-nopgbrk",
-                   os.path.abspath(path), "-"]
-        with subprocess.Popen(command, stdout=subprocess.PIPE) as converter:
-            try:
-                data = converter.stdout.read(MAX_MESSAGE + 1)
-                if len(data) <= MAX_MESSAGE and converter.wait():
-                    raise ValueError("Der Text konnte nicht aus der PDF-Datei gelesen werden.")
-            finally:
-                if converter.poll() is None:
-                    converter.kill()
-    else:
-        with path.open("rb") as source_file:
-            data = source_file.read(MAX_MESSAGE + 1)
-    if len(data) > MAX_MESSAGE:
-        raise ValueError(f"Der Nachrichtentext überschreitet das Limit von {MAX_MESSAGE} UTF-8-Bytes.")
-    message = data.decode("utf-8")
-    if pdf and not message.strip():
-        raise ValueError("Die PDF-Datei enthält keinen extrahierbaren Text.")
-    return message
 
 
 def main():
@@ -99,13 +88,17 @@ def main():
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("--file", type=Path, metavar="DATEI",
-                        help="Nachricht aus einer UTF-8-Textdatei oder PDF lesen")
+                        help="Datei unverändert übertragen (Base64)")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
+    rx.add_argument("--output", type=Path, metavar="DATEI",
+                    help="Eine empfangene Datei speichern und beenden")
     for mode in (tx, rx):
         mode.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
                           help="ChaCha20-Poly1305 mit gemeinsamem Schlüssel verwenden")
     args = parser.parse_args()
+    if args.mode == "send" and args.file is not None and args.compress:
+        tx.error("--compress kann nicht mit --file verwendet werden.")
 
     try:
         cipher = load_cipher(args.encrypt) if args.encrypt else None
@@ -114,13 +107,14 @@ def main():
         if not shutil.which("pacat"):
             raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
         if args.mode == "send":
-            message = args.message
-            fragment = args.no_length_limit or args.file is not None
             if args.file is not None:
-                message = read_message_file(args.file)
-            frames = list(packets(message, args.compress, cipher, fragment))
+                with args.file.open("rb") as source_file:
+                    data = source_file.read(MAX_FILE + 1)
+                frames = list(file_packets(data, cipher))
+            else:
+                frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
             return send(frames, args.callsign)
-        return listen(cipher)
+        return listen(cipher, args.output)
     except ImportError:
         print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
         return 1

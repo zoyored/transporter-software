@@ -33,29 +33,27 @@ A message can contain 1 to 170 UTF-8 bytes. The call sign must contain 1 to 9
 ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
 which plays them through the system's default audio output.
 
-### Send from a file
+### Transfer a file
+
+Start the receiver with an output path, then send the file.
 
 ```sh
-./rattlegram-audio send --file message.txt DL1ABC
-```
+# On the receiver
+./rattlegram-audio listen --output received.pdf
 
-For UTF-8 text files, leading and trailing spaces, tabs, blank lines, and line
-endings are preserved, including at the end of the file.
-The receiver writes the message followed by its usual output newline.
-`--file` replaces the positional message and automatically enables
-fragmentation when needed, up to 64 KiB of UTF-8 text. You can combine it
-with `--compress` and `--encrypt`.
-
-To send text from a PDF, install `pdftotext` from `poppler-utils` on the
-sender and pass the PDF to the same option.
-
-```sh
+# On the sender
 ./rattlegram-audio send --file "document.pdf" DL1ABC
 ```
 
-The sender extracts embedded text using Poppler's layout mode and applies the
-message size limit to the resulting UTF-8 text. The receiver prints that text
-to stdout. Image-only scans require OCR before sending.
+Files are Base64-encoded for transport, then decoded and saved byte for byte.
+The receiver saves one complete file and exits. It refuses to overwrite an
+existing destination. Both sides need a version that supports file transfer.
+
+Files up to 1 MiB are supported. The sender automatically splits larger
+payloads into multiple radio packets. Missing fragments are never requested
+again. Large files can take many minutes to transmit. Compression is
+unavailable for `--file`. To encrypt a file, add
+`--encrypt rattlegram.key` to both commands.
 
 ## Test locally without an audio device
 
@@ -111,8 +109,7 @@ The packet header is authenticated as associated data.
 
 ## Longer messages
 
-For a positional message, use `--no-length-limit` to lift the single-packet
-limit. With `--file`, fragmentation is already enabled.
+Use `--no-length-limit` to lift the single-packet limit.
 
 ```sh
 ./rattlegram-audio send --no-length-limit --compress "A long message passed as an argument" DL1ABC
