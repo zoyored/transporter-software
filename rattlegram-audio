@@ -5,8 +5,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
-from payload import MAX_MESSAGE, MAX_PAYLOAD, Reassembler, load_cipher, packets
+from payload import MAX_FILE, Reassembler, file_packets, load_cipher, packets
 
 BIN = Path(__file__).resolve().parent / "bin"
 PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
@@ -33,8 +34,17 @@ def messages(stream):
         raise ValueError("Decoder lieferte eine unvollständige Nachricht.")
 
 
-def listen(cipher):
-    reassembler = Reassembler()
+def save_file(output, data):
+    with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+        staged = Path(temporary) / "received"
+        staged.write_bytes(data)
+        os.link(staged, output)
+
+
+def listen(cipher, require_encryption, output, receive_dir):
+    if output is not None and os.path.lexists(output):
+        raise ValueError(f"Die Zieldatei existiert bereits: {output}")
+    reassembler = Reassembler(cipher, require_encryption)
     with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
@@ -44,14 +54,28 @@ def listen(cipher):
                 try:
                     for packet in messages(decoder.stdout):
                         try:
-                            message = reassembler.receive(packet, cipher)
+                            transfer = reassembler.receive(packet)
                         except ValueError as exc:
                             print(f"Empfang verworfen: {exc}", file=sys.stderr)
                             continue
-                        if message is None:
+                        if transfer is None:
                             continue
-                        sys.stdout.buffer.write(message.encode("utf-8") + b"\n")
-                        sys.stdout.buffer.flush()
+                        if isinstance(transfer.data, bytes):
+                            if output is not None:
+                                save_file(output, transfer.data)
+                                return 0
+                            receive_dir.mkdir(parents=True, exist_ok=True)
+                            transfer_id = transfer.transfer_id or os.urandom(8).hex()
+                            target = receive_dir / f"rattlegram-{transfer_id}.bin"
+                            try:
+                                save_file(target, transfer.data)
+                            except OSError as exc:
+                                print(f"Datei konnte nicht gespeichert werden: {exc}", file=sys.stderr)
+                            else:
+                                print(f"Datei gespeichert: {target}", file=sys.stderr)
+                        else:
+                            sys.stdout.buffer.write(transfer.data.encode("utf-8") + b"\n")
+                            sys.stdout.buffer.flush()
                     decoder.wait()
                 finally:
                     if decoder.poll() is None:
@@ -60,6 +84,8 @@ def listen(cipher):
         finally:
             if recorder.poll() is None:
                 recorder.terminate()
+    if output is not None:
+        raise ValueError("Der Audioeingang endete vor dem vollständigen Dateiempfang.")
     return int(bool(recorder_running or recorder.returncode or decoder.returncode))
 
 
@@ -73,32 +99,41 @@ def main():
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("--file", type=Path, metavar="DATEI",
-                        help="Nachricht als UTF-8 aus einer Datei lesen")
+                        help="Datei unverändert übertragen (Base64)")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
-    for mode in (tx, rx):
-        mode.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
-                          help="ChaCha20-Poly1305 mit gemeinsamem Schlüssel verwenden")
+    targets = rx.add_mutually_exclusive_group()
+    targets.add_argument("--output", type=Path, metavar="DATEI",
+                         help="Eine empfangene Datei speichern und beenden")
+    targets.add_argument("--receive-dir", type=Path, default=Path("received"), metavar="ORDNER",
+                         help="Empfangene Dateien automatisch speichern (Standard: received)")
+    tx.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+                    help="Mit ChaCha20-Poly1305 verschlüsseln")
+    keys = rx.add_mutually_exclusive_group()
+    keys.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+                      help="Ausschließlich authentifizierte Übertragungen empfangen")
+    keys.add_argument("--key-file", type=Path, metavar="SCHLÜSSELDATEI",
+                      help="Verschlüsselte und unverschlüsselte Übertragungen empfangen")
     args = parser.parse_args()
+    if args.mode == "send" and args.file is not None and args.compress:
+        tx.error("--compress kann nicht mit --file verwendet werden.")
 
     try:
-        cipher = load_cipher(args.encrypt) if args.encrypt else None
+        key = args.encrypt or getattr(args, "key_file", None)
+        cipher = load_cipher(key) if key else None
         if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
             raise ValueError("Bitte zuerst make im Programmverzeichnis ausführen.")
         if not shutil.which("pacat"):
             raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
         if args.mode == "send":
-            message = args.message
             if args.file is not None:
-                limit = MAX_MESSAGE if args.no_length_limit else MAX_PAYLOAD
                 with args.file.open("rb") as source_file:
-                    data = source_file.read(limit + 1)
-                if len(data) > limit:
-                    raise ValueError(f"Die Datei überschreitet das Limit von {limit} UTF-8-Bytes.")
-                message = data.decode("utf-8")
-            frames = list(packets(message, args.compress, cipher, args.no_length_limit))
+                    data = source_file.read(MAX_FILE + 1)
+                frames = list(file_packets(data, cipher))
+            else:
+                frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
             return send(frames, args.callsign)
-        return listen(cipher)
+        return listen(cipher, args.encrypt is not None, args.output, args.receive_dir)
     except ImportError:
         print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
         return 1
