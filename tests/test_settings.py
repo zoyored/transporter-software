@@ -39,12 +39,12 @@ class SettingsTest(unittest.TestCase):
         for mode in (0o400, 0o644, 0o660):
             with self.subTest(mode=mode):
                 key.chmod(mode)
-                with self.assertRaisesRegex(ValueError, "Erwartet 600"):
+                with self.assertRaisesRegex(ValueError, "Expected 600"):
                     load_cipher(self.directory)
         other = key.rename(self.directory / "other")
         other.chmod(0o600)
         key.symlink_to(other)
-        with self.assertRaisesRegex(ValueError, "Symlink"):
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
             load_cipher(self.directory)
 
 

@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
     const bool frames = metadata || option == "--frames";
     AudioConfig audio;
     if (argc != 1 && (!frames || (argc != 2 && (argc != 6 || !audio.read(argv + 2))))) {
-        std::fprintf(stderr, "Aufruf: listen-pcm [--frames | --metadata [RATE BITS CHANNEL MAPPING]]\n");
+        std::fprintf(stderr, "Usage: listen-pcm [--frames | --metadata [RATE BITS CHANNEL MAPPING]]\n");
         return 2;
     }
     auto decoder = make_codec<Decoder, DecoderInterface>(audio);
@@ -38,17 +38,17 @@ int main(int argc, char **argv) {
                         std::fputs(message, stdout) == EOF ||
                         std::fputc(frames ? '\0' : '\n', stdout) == EOF ||
                         std::fflush(stdout) == EOF) {
-                        std::perror("Textausgabe");
+                        std::perror("Text output");
                         return 1;
                     }
                 } else if (metadata) {
-                    std::fprintf(stderr, "Funkpaket von %s konnte nicht decodiert werden.\n", sender);
+                    std::fprintf(stderr, "Could not decode packet from %s.\n", sender);
                 }
             }
         }
         if (count < block_frames) {
             if (std::ferror(stdin)) {
-                std::perror("Audioeingabe");
+                std::perror("Audio input");
                 return 1;
             }
             return 0;

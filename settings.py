@@ -62,13 +62,13 @@ def load_settings(directory):
         return AudioSettings(
             read_number(audio, "NOISE_SYMBOLS", range(33), "0–32"),
             read_number(audio, "CARRIER_FREQUENCY", range(900, 3101), "900–3100"),
-            read_number(audio, "RATE", (8000, 48000), "8000 oder 48000"),
-            read_number(audio, "BITS", (8, 16, 24, 32), "8, 16, 24 oder 32"),
+            read_number(audio, "RATE", (8000, 48000), "8000 or 48000"),
+            read_number(audio, "BITS", (8, 16, 24, 32), "8, 16, 24, or 32"),
             read_number(audio, "CHANNEL", range(5), "0–4"),
-            read_number(audio, "MAPPING", (2, 4, 8, 16), "2, 4, 8 oder 16"),
+            read_number(audio, "MAPPING", (2, 4, 8, 16), "2, 4, 8, or 16"),
         )
     except (ValueError, configparser.Error) as exc:
-        raise ValueError(f"Ungültige Konfiguration in {config_path}: {exc}") from exc
+        raise ValueError(f"Invalid configuration in {config_path}: {exc}") from exc
 
 
 def read_number(section, name, allowed, description):
@@ -77,7 +77,7 @@ def read_number(section, name, allowed, description):
     except ValueError:
         value = None
     if value not in allowed:
-        raise ValueError(f"{name} muss {description} sein.")
+        raise ValueError(f"{name} must be {description}.")
     return value
 
 
@@ -86,24 +86,24 @@ def load_cipher(directory):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except PermissionError as exc:
-        raise ValueError(f"{path} ist nicht lesbar. Erwartet werden Rechte 600 "
-                         "und der aktuelle Benutzer als Eigentümer.") from exc
+        raise ValueError(f"Cannot read {path}. The key must have mode 600 "
+                         "and be owned by the current user.") from exc
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            raise ValueError(f"Die Schlüsseldatei {path} darf kein Symlink sein.") from exc
+            raise ValueError(f"Key file {path} must not be a symbolic link.") from exc
         raise
 
     with os.fdopen(fd, "rb") as key_file:
         info = os.fstat(key_file.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            raise ValueError(f"{path} muss eine reguläre Datei im Eigentum des Benutzers sein.")
+            raise ValueError(f"{path} must be a regular file owned by the current user.")
         mode = stat.S_IMODE(info.st_mode)
         if mode != 0o600:
-            raise ValueError(f"Unsichere Rechte für {path}: {mode:o}. Erwartet 600. "
-                             "Bitte chmod 600 auf die Schlüsseldatei anwenden.")
+            raise ValueError(f"Insecure permissions on {path}: {mode:o}. Expected 600. "
+                             "Run chmod 600 on the key file.")
         key = key_file.read(33)
     if len(key) != 32:
-        raise ValueError(f"{path} muss genau 32 rohe Schlüsselbytes enthalten.")
+        raise ValueError(f"{path} must contain exactly 32 raw key bytes.")
 
     from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
