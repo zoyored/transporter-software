@@ -41,10 +41,10 @@ def save_file(output, data):
         os.link(staged, output)
 
 
-def listen(cipher, output):
+def listen(cipher, require_encryption, output, receive_dir):
     if output is not None and os.path.lexists(output):
         raise ValueError(f"Die Zieldatei existiert bereits: {output}")
-    reassembler = Reassembler(receive_files=output is not None)
+    reassembler = Reassembler(cipher, require_encryption)
     with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
@@ -54,17 +54,28 @@ def listen(cipher, output):
                 try:
                     for packet in messages(decoder.stdout):
                         try:
-                            message = reassembler.receive(packet, cipher)
+                            transfer = reassembler.receive(packet)
                         except ValueError as exc:
                             print(f"Empfang verworfen: {exc}", file=sys.stderr)
                             continue
-                        if message is None:
+                        if transfer is None:
                             continue
-                        if output is not None:
-                            save_file(output, message)
-                            return 0
-                        sys.stdout.buffer.write(message.encode("utf-8") + b"\n")
-                        sys.stdout.buffer.flush()
+                        if isinstance(transfer.data, bytes):
+                            if output is not None:
+                                save_file(output, transfer.data)
+                                return 0
+                            receive_dir.mkdir(parents=True, exist_ok=True)
+                            transfer_id = transfer.transfer_id or os.urandom(8).hex()
+                            target = receive_dir / f"rattlegram-{transfer_id}.bin"
+                            try:
+                                save_file(target, transfer.data)
+                            except OSError as exc:
+                                print(f"Datei konnte nicht gespeichert werden: {exc}", file=sys.stderr)
+                            else:
+                                print(f"Datei gespeichert: {target}", file=sys.stderr)
+                        else:
+                            sys.stdout.buffer.write(transfer.data.encode("utf-8") + b"\n")
+                            sys.stdout.buffer.flush()
                     decoder.wait()
                 finally:
                     if decoder.poll() is None:
@@ -91,17 +102,25 @@ def main():
                         help="Datei unverändert übertragen (Base64)")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
-    rx.add_argument("--output", type=Path, metavar="DATEI",
-                    help="Eine empfangene Datei speichern und beenden")
-    for mode in (tx, rx):
-        mode.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
-                          help="ChaCha20-Poly1305 mit gemeinsamem Schlüssel verwenden")
+    targets = rx.add_mutually_exclusive_group()
+    targets.add_argument("--output", type=Path, metavar="DATEI",
+                         help="Eine empfangene Datei speichern und beenden")
+    targets.add_argument("--receive-dir", type=Path, default=Path("received"), metavar="ORDNER",
+                         help="Empfangene Dateien automatisch speichern (Standard: received)")
+    tx.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+                    help="Mit ChaCha20-Poly1305 verschlüsseln")
+    keys = rx.add_mutually_exclusive_group()
+    keys.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+                      help="Ausschließlich authentifizierte Übertragungen empfangen")
+    keys.add_argument("--key-file", type=Path, metavar="SCHLÜSSELDATEI",
+                      help="Verschlüsselte und unverschlüsselte Übertragungen empfangen")
     args = parser.parse_args()
     if args.mode == "send" and args.file is not None and args.compress:
         tx.error("--compress kann nicht mit --file verwendet werden.")
 
     try:
-        cipher = load_cipher(args.encrypt) if args.encrypt else None
+        key = args.encrypt or getattr(args, "key_file", None)
+        cipher = load_cipher(key) if key else None
         if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
             raise ValueError("Bitte zuerst make im Programmverzeichnis ausführen.")
         if not shutil.which("pacat"):
@@ -114,7 +133,7 @@ def main():
             else:
                 frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
             return send(frames, args.callsign)
-        return listen(cipher, args.output)
+        return listen(cipher, args.encrypt is not None, args.output, args.receive_dir)
     except ImportError:
         print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
         return 1

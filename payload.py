@@ -3,13 +3,23 @@
 import base64
 import os
 import re
+import struct
 import time
 import zlib
+from typing import NamedTuple, Optional, Union
 
 MAX_PAYLOAD = 170
-PREFIX = b"~RG1"
+LEGACY_PREFIX = b"~RG1"
+PREFIX = b"~RG2:"
+VERSION_PREFIX = re.compile(rb"~RG[0-9]+:")
+HEADER = struct.Struct("!B8sHH")
+AUTH_HEADER = struct.Struct("!B8sH")
+CRC = struct.Struct("!I")
+CHUNK_SIZE = (MAX_PAYLOAD - len(PREFIX)) // 4 * 3 - HEADER.size
 COMPRESSED = 1
 ENCRYPTED = 2
+FILE = 4
+KNOWN_FLAGS = COMPRESSED | ENCRYPTED | FILE
 NONCE_SIZE = 12
 TAG_SIZE = 16
 MAX_MESSAGE = 64 * 1024
@@ -17,9 +27,9 @@ MAX_WIRE = 2 * MAX_MESSAGE
 MAX_FILE = 1024 * 1024
 FILE_HEADERS = (b"~RG14:", b"~RG16:")
 MAX_FILE_WIRE = len(FILE_HEADERS[0]) + 4 * ((MAX_FILE + NONCE_SIZE + TAG_SIZE + 2) // 3)
-FRAGMENT_PREFIX = b"~RG1F:"
-FRAGMENT_HEADER = re.compile(rb"~RG1F:([0-9a-f]{16})([0-9a-f]{4})([0-9a-f]{4})")
-FRAGMENT_SIZE = MAX_PAYLOAD - 30
+LEGACY_FRAGMENT_PREFIX = b"~RG1F:"
+LEGACY_FRAGMENT_HEADER = re.compile(rb"~RG1F:([0-9a-f]{16})([0-9a-f]{4})([0-9a-f]{4})")
+LEGACY_CHUNK_SIZE = MAX_PAYLOAD - 30
 MAX_PENDING = 8
 FRAGMENT_TIMEOUT = 30
 
@@ -55,31 +65,11 @@ def decrypt_data(data, header, cipher):
         raise ValueError("Authentifizierung fehlgeschlagen.") from exc
 
 
-def pack(message, compress=False, cipher=None, limit=MAX_PAYLOAD):
-    data = message.encode("utf-8")
-    if not 1 <= len(data) <= limit or b"\0" in data:
-        raise ValueError(f"Die Nachricht braucht 1 bis {limit} UTF-8-Bytes ohne Nullbyte.")
-    flags = (COMPRESSED if compress else 0) | (ENCRYPTED if cipher else 0)
-    if not flags:
-        if data.startswith(PREFIX):
-            raise ValueError("Das Präfix ~RG1 ist für erweiterte Nachrichten reserviert.")
-        return data
-
-    header = PREFIX + str(flags).encode("ascii") + b":"
-    if compress:
-        data = zlib.compress(data, level=9)
-    data = encrypt_data(data, header, cipher)
-    packet = header + base64.b85encode(data)
-    if limit == MAX_PAYLOAD and len(packet) > MAX_PAYLOAD:
-        raise ValueError("Die Nachricht passt mit diesen Optionen nicht in 170 Funkbytes.")
-    return packet
-
-
-def unpack(packet, cipher=None, limit=MAX_PAYLOAD):
+def unpack_legacy_text(packet, cipher, limit):
     wire_limit = MAX_PAYLOAD if limit == MAX_PAYLOAD else MAX_WIRE
     if not 1 <= len(packet) <= wire_limit:
         raise ValueError("Ungültige Paketlänge.")
-    if not packet.startswith(PREFIX):
+    if not packet.startswith(LEGACY_PREFIX):
         if cipher:
             raise ValueError("Unverschlüsselte Nachricht verworfen.")
         if len(packet) > limit or b"\0" in packet:
@@ -101,6 +91,10 @@ def unpack(packet, cipher=None, limit=MAX_PAYLOAD):
         raise ValueError("Ungültige Base85-Daten.")
     data = decrypt_data(data, header, cipher)
 
+    return decode_text(data, flags, limit)
+
+
+def decode_text(data, flags, limit):
     if flags & COMPRESSED:
         decoder = zlib.decompressobj()
         try:
@@ -115,27 +109,49 @@ def unpack(packet, cipher=None, limit=MAX_PAYLOAD):
 
 
 def packets(message, compress=False, cipher=None, fragment=False):
+    data = message.encode("utf-8")
     limit = MAX_MESSAGE if fragment else MAX_PAYLOAD
-    packet = pack(message, compress, cipher, limit)
-    if len(packet) <= MAX_PAYLOAD and len(message.encode("utf-8")) <= MAX_PAYLOAD:
-        yield packet
-        return
-
-    yield from fragment_packet(packet)
+    if not 1 <= len(data) <= limit or b"\0" in data:
+        raise ValueError(f"Die Nachricht braucht 1 bis {limit} UTF-8-Bytes ohne Nullbyte.")
+    flags = COMPRESSED if compress else 0
+    if compress:
+        data = zlib.compress(data, level=9)
+    return encode_packets(data, flags, cipher, fragment)
 
 
 def file_packets(data, cipher=None):
     if len(data) > MAX_FILE:
         raise ValueError(f"Die Datei überschreitet das Limit von {MAX_FILE} Bytes.")
-    header = FILE_HEADERS[cipher is not None]
-    packet = header + base64.b64encode(encrypt_data(data, header, cipher))
-    if len(packet) <= MAX_PAYLOAD:
-        yield packet
+    return encode_packets(data, FILE, cipher, fragment=True)
+
+
+def encode_packets(data, flags, cipher, fragment):
+    if cipher is not None:
+        flags |= ENCRYPTED
+    overhead = NONCE_SIZE + TAG_SIZE if cipher is not None else CRC.size
+    count = (len(data) + overhead + CHUNK_SIZE - 1) // CHUNK_SIZE
+    if count > 1 and not fragment:
+        raise ValueError("Die Nachricht passt nicht in ein Funkpaket. --no-length-limit verwenden.")
+
+    transfer_id = os.urandom(8)
+    aad = PREFIX + AUTH_HEADER.pack(flags, transfer_id, count)
+    if cipher is not None:
+        body = encrypt_data(data, aad, cipher)
     else:
-        yield from fragment_packet(packet)
+        body = data + CRC.pack(zlib.crc32(data, zlib.crc32(aad)))
+
+    for index in range(count):
+        start = index * CHUNK_SIZE
+        header = HEADER.pack(flags, transfer_id, index, count)
+        yield PREFIX + base64.b64encode(header + body[start:start + CHUNK_SIZE])
 
 
-def unpack_file(packet, cipher):
+class Transfer(NamedTuple):
+    data: Union[str, bytes]
+    transfer_id: Optional[str] = None
+
+
+def unpack_legacy_file(packet, cipher):
     header = packet[:6]
     encrypted = header == FILE_HEADERS[1]
     if encrypted != (cipher is not None):
@@ -151,64 +167,109 @@ def unpack_file(packet, cipher):
     return data
 
 
-def fragment_packet(packet):
-    transfer_id = os.urandom(8).hex()
-    count = (len(packet) + FRAGMENT_SIZE - 1) // FRAGMENT_SIZE
-    for index in range(count):
-        start = index * FRAGMENT_SIZE
-        header = FRAGMENT_PREFIX + f"{transfer_id}{index:04x}{count:04x}".encode("ascii")
-        yield header + packet[start:start + FRAGMENT_SIZE]
+def decode_header(packet):
+    encoded = packet[len(PREFIX):]
+    frame = base64.b64decode(encoded, validate=True)
+    if base64.b64encode(frame) != encoded or len(frame) <= HEADER.size:
+        raise ValueError("Ungültiger RG2-Paketkopf.")
+    flags, transfer_id, index, count = HEADER.unpack_from(frame)
+    if flags & ~KNOWN_FLAGS or (flags & FILE and flags & COMPRESSED):
+        raise ValueError("Ungültige RG2-Flags.")
+    return flags, transfer_id, index, count, frame[HEADER.size:]
+
+
+def decode_body(body, flags, transfer_id, count, cipher):
+    aad = PREFIX + AUTH_HEADER.pack(flags, transfer_id, count)
+    if flags & ENCRYPTED:
+        data = decrypt_data(body, aad, cipher)
+    else:
+        data, checksum = body[:-CRC.size], body[-CRC.size:]
+        if checksum != CRC.pack(zlib.crc32(data, zlib.crc32(aad))):
+            raise ValueError("Prüfsumme stimmt nicht.")
+    if flags & FILE:
+        if len(data) > MAX_FILE:
+            raise ValueError("Die empfangene Datei ist zu groß.")
+        return Transfer(data, transfer_id.hex())
+    return Transfer(decode_text(data, flags, MAX_MESSAGE))
 
 
 class Reassembler:
-    """Track a small number of incomplete, sequential transfers."""
+    """Collect bounded sets of fragments and decode only complete transfers."""
 
-    def __init__(self, receive_files=False):
+    def __init__(self, cipher=None, require_encryption=False):
         self.pending = {}
-        self.receive_files = receive_files
-        wire_limit = MAX_FILE_WIRE if receive_files else MAX_WIRE
-        self.max_fragments = (wire_limit + FRAGMENT_SIZE - 1) // FRAGMENT_SIZE
+        self.cipher = cipher
+        self.require_encryption = require_encryption
 
-    def decode(self, packet, cipher, limit):
-        if packet[:6] in FILE_HEADERS:
-            if not self.receive_files:
-                raise ValueError("Für Dateiempfang listen --output DATEI verwenden.")
-            return unpack_file(packet, cipher)
-        if not self.receive_files:
-            return unpack(packet, cipher, limit)
-        return None
+    def select_cipher(self, encrypted):
+        if encrypted and self.cipher is None:
+            raise ValueError("Schlüssel erforderlich.")
+        if not encrypted and self.require_encryption:
+            raise ValueError("Unverschlüsselte Übertragung verworfen.")
+        return self.cipher if encrypted else None
 
-    def receive(self, packet, cipher=None):
-        if not packet.startswith(FRAGMENT_PREFIX):
-            return self.decode(packet, cipher, MAX_PAYLOAD)
+    def receive(self, packet):
+        if not 1 <= len(packet) <= MAX_PAYLOAD:
+            raise ValueError("Ungültige Funkpaketlänge.")
+        if packet.startswith(PREFIX):
+            flags, transfer_id, index, count, chunk = decode_header(packet)
+            cipher = self.select_cipher(flags & ENCRYPTED)
+            limit = (MAX_FILE + NONCE_SIZE + TAG_SIZE) if flags & FILE else MAX_WIRE
+            body = self.assemble((PREFIX, transfer_id), flags, index, count,
+                                 chunk, CHUNK_SIZE, limit)
+            if body is not None:
+                return decode_body(body, flags, transfer_id, count, cipher)
+            return None
+        if packet.startswith(LEGACY_FRAGMENT_PREFIX):
+            header = LEGACY_FRAGMENT_HEADER.match(packet)
+            if not header:
+                raise ValueError("Ungültiger Fragmentkopf.")
+            transfer_id, index, count = header.groups()
+            packet = self.assemble((LEGACY_FRAGMENT_PREFIX, transfer_id), 0,
+                                   int(index, 16), int(count, 16), packet[header.end():],
+                                   LEGACY_CHUNK_SIZE, MAX_FILE_WIRE)
+            if packet is None:
+                return None
+            return self.decode_legacy(packet, MAX_MESSAGE, transfer_id.decode("ascii"))
+        if VERSION_PREFIX.match(packet) and not packet.startswith(LEGACY_PREFIX):
+            raise ValueError("Unbekannte Rattlegram-Protokollversion.")
+        return self.decode_legacy(packet, MAX_PAYLOAD)
 
-        header = FRAGMENT_HEADER.match(packet)
-        if not header or not header.end() < len(packet) <= MAX_PAYLOAD:
-            raise ValueError("Ungültiger Fragmentkopf.")
-        transfer_id, index, count = header.groups()
-        index, count = int(index, 16), int(count, 16)
-        data = packet[header.end():]
-        if not 0 <= index < count <= self.max_fragments or (
-                index < count - 1 and len(data) != FRAGMENT_SIZE):
+    def decode_legacy(self, packet, limit, transfer_id=None):
+        header = packet[:6]
+        cipher = self.select_cipher(header in (b"~RG12:", b"~RG13:", FILE_HEADERS[1]))
+        if header in FILE_HEADERS:
+            return Transfer(unpack_legacy_file(packet, cipher), transfer_id)
+        return Transfer(unpack_legacy_text(packet, cipher, limit))
+
+    def assemble(self, key, flags, index, count, chunk, chunk_size, limit):
+        max_count = (limit + chunk_size - 1) // chunk_size
+        if not 0 <= index < count <= max_count or not 1 <= len(chunk) <= chunk_size:
             raise ValueError("Ungültige Fragmentnummer oder -länge.")
-
+        if index < count - 1 and len(chunk) != chunk_size:
+            raise ValueError("Ungültige Fragmentlänge.")
+        if index == count - 1 and index * chunk_size + len(chunk) > limit:
+            raise ValueError("Die Übertragung ist zu groß.")
         now = time.monotonic()
         self.pending = {
-            key: state for key, state in self.pending.items()
+            k: state for k, state in self.pending.items()
             if now - state[0] < FRAGMENT_TIMEOUT
         }
-        state = self.pending.pop(transfer_id, None)
-        if index == 0:
-            parts = []
-        elif state is not None and state[1] == count and len(state[2]) == index:
-            parts = state[2]
-        else:
-            raise ValueError("Ein vorheriges Fragment fehlt.")
+        previous, expected_flags, expected_count, parts = self.pending.pop(
+            key, (now, flags, count, {}))
+        if (flags, count) != (expected_flags, expected_count):
+            raise ValueError("Widersprüchliche Fragmentköpfe.")
+        if count == 1:
+            return chunk
+        if index in parts:
+            if parts[index] != chunk:
+                raise ValueError("Widersprüchliche Fragmentdaten.")
+            now = previous
 
-        parts.append(data)
+        parts[index] = chunk
         if len(parts) == count:
-            return self.decode(b"".join(parts), cipher, MAX_MESSAGE)
+            return b"".join(parts[i] for i in range(count))
         if len(self.pending) == MAX_PENDING:
             del self.pending[next(iter(self.pending))]
-        self.pending[transfer_id] = now, count, parts
+        self.pending[key] = now, flags, count, parts
         return None

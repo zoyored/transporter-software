@@ -29,31 +29,34 @@ into another command, such as `./rattlegram-audio listen | tee received.txt`.
 ./rattlegram-audio send "Hello from Rattlegram!" DL1ABC
 ```
 
-A message can contain 1 to 170 UTF-8 bytes. The call sign must contain 1 to 9
+A plain text message can contain up to 106 UTF-8 bytes in one packet. For
+longer text, use `--no-length-limit`. The call sign must contain 1 to 9
 ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
 which plays them through the system's default audio output.
 
 ### Transfer a file
 
-Start the receiver with an output path, then send the file.
+Start the receiver, then send the file.
 
 ```sh
 # On the receiver
-./rattlegram-audio listen --output received.pdf
+./rattlegram-audio listen
 
 # On the sender
 ./rattlegram-audio send --file "document.pdf" DL1ABC
 ```
 
-Files are Base64-encoded for transport, then decoded and saved byte for byte.
-The receiver saves one complete file and exits. It refuses to overwrite an
-existing destination. Both sides need a version that supports file transfer.
+The listener detects files automatically and saves them byte for byte as
+`received/rattlegram-<transfer-id>.bin`. Use `--receive-dir DIR` to choose
+another directory or `--output PATH` to save one file under a specific name
+and exit. Existing files are never overwritten. Decoded text still goes to
+stdout. File status and errors go to stderr.
 
 Files up to 1 MiB are supported. The sender automatically splits larger
 payloads into multiple radio packets. Missing fragments are never requested
 again. Large files can take many minutes to transmit. Compression is
-unavailable for `--file`. To encrypt a file, add
-`--encrypt rattlegram.key` to both commands.
+unavailable for `--file`. To encrypt a file, use `send --encrypt rattlegram.key`
+and supply the same key to the listener.
 
 ## Test locally without an audio device
 
@@ -89,23 +92,16 @@ once and use the same key file on both devices. The file contains exactly
 ./rattlegram-audio listen --encrypt rattlegram.key
 ```
 
-With `listen --encrypt`, the receiver outputs only packets that authenticate
-with the supplied key. Without a key, it accepts plaintext and
-compression-only packets. Diagnostics for discarded packets go to stderr.
-The call sign remains visible in the Rattlegram packet header.
+The listener reads the encryption flag automatically. Use
+`listen --key-file rattlegram.key` to receive both encrypted and unencrypted
+traffic, or `listen --encrypt rattlegram.key` to require authentication.
+Encrypted transfers need a matching key. The call sign and frame header
+remain visible.
 
-By default, the sender transmits standard Rattlegram text packets with up
-to 170 UTF-8 bytes. The `~RG1` prefix is reserved for extended packets.
-With encryption alone, a single packet holds up to 103 UTF-8 bytes.
-With compression, the capacity depends on how well the text compresses.
-If the encoded packet exceeds 170 bytes, the sender exits with an error.
-Both sides need this program to use extended packets.
-
-Extended packets consist of `~RG1<flags>:` followed by Base85 data. Flag 1
-indicates zlib, flag 2 indicates ChaCha20-Poly1305, and flag 3 enables both.
-With flag 3, compression runs before encryption. The encrypted Base85
-data contains a random 12-byte nonce, the ciphertext, and a 16-byte tag.
-The packet header is authenticated as associated data.
+One RG2 packet holds up to 106 uncompressed plaintext bytes, or 82 with
+encryption. With compression, capacity depends on how well the text
+compresses. A payload that does not fit in one packet requires
+`--no-length-limit`.
 
 ## Longer messages
 
@@ -125,3 +121,40 @@ Each radio packet still has a 170-byte limit. With this option, the program
 handles up to 64 KiB of UTF-8 text per message. Missing fragments are never
 requested again. When another fragment arrives, the receiver discards any
 incomplete transfers that have made no progress for 30 seconds.
+
+## RG2 wire format
+
+New sends use RG2. The listener also accepts raw Rattlegram text and legacy
+RG1 text, file, encryption, and fragmentation formats. Older listeners
+need an upgrade to interpret RG2.
+
+Each radio payload is the five ASCII bytes `~RG2:` followed by standard
+padded Base64 with no line breaks. The decoded bytes contain a 13-byte
+header followed by up to 110 bytes of the transfer body. Integers are
+unsigned and big-endian.
+
+| Field | Size | Meaning |
+| --- | ---: | --- |
+| Flags | 1 byte | `0x01` compressed, `0x02` encrypted, `0x04` file. Other bits are reserved. |
+| Transfer ID | 8 bytes | Random bytes shared by all fragments of a transfer. |
+| Fragment index | 2 bytes | Zero-based index. |
+| Fragment count | 2 bytes | Total fragments. One indicates a single-packet transfer. |
+
+The sender applies zlib compression to text when requested. Then it protects
+the entire body before splitting it into 110-byte chunks. All chunks except
+the last have exactly 110 bytes. Files cannot set the compressed flag.
+
+The common metadata bytes are the literal `~RG2:` prefix, flags, transfer ID,
+and big-endian fragment count in that order. The fragment index is used to
+restore the original byte order.
+
+- **Unencrypted** bodies contain the payload followed by a big-endian
+  CRC-32 over the common metadata and payload. This detects accidental
+  corruption.
+- **Encrypted** bodies contain a random 12-byte nonce followed by
+  ChaCha20-Poly1305 ciphertext and its 16-byte tag. The common metadata
+  is authenticated as associated data.
+
+The receiver bounds reassembly, checks consistent headers, and verifies
+the full transfer before decompressing, printing, or saving it. Fragments
+may arrive out of order. No partial files are published.
