@@ -84,9 +84,10 @@ sender and packet count when it receives the first file packet. It reports
 the final path after verification and saving. File status and errors go to
 stderr.
 
-Reception quality also goes to stderr as the number of corrected payload
-bits per decoded radio packet. A lower count means the decoder needed
-fewer corrections. This count is separate from signal strength or SNR.
+Use `listen -v` or `listen --verbose` to report the number of corrected
+payload bits per decoded radio packet on stderr. A lower count means
+the decoder needed fewer corrections. This count is separate from signal
+strength or SNR.
 
 Files up to 1 MiB are supported. The sender automatically splits larger
 payloads into multiple radio packets. Missing fragments are never requested
@@ -175,6 +176,7 @@ incomplete transfers that have made no progress for 30 seconds.
 | `-k` | `--key-file` | `listen` |
 | `-o` | `--output PATH` | `listen` |
 | `-d` | `--receive-dir DIR` | `listen` |
+| `-v` | `--verbose` | `listen` |
 | `-h` | `--help` | All commands |
 
 ## RG2 wire format
