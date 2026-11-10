@@ -82,3 +82,22 @@ für zlib, Flag 2 für ChaCha20-Poly1305 und Flag 3 für beides. Bei Flag 3 wird
 vor der Verschlüsselung komprimiert. Verschlüsselte Base85-Daten enthalten
 einen zufälligen 12-Byte-Nonce, den Ciphertext und den 16-Byte-Tag. Der
 Paketkopf wird als Associated Data authentifiziert.
+
+## Längere Nachrichten
+
+Mit `--no-length-limit` entfällt die Beschränkung auf ein einzelnes Funkpaket.
+
+```sh
+./rattlegram-audio send --no-length-limit --compress "$(cat nachricht.txt)" DL1ABC
+```
+
+Der Sender teilt längere Nachrichten in nummerierte Fragmente auf. Der Empfänger
+setzt sie automatisch zusammen und gibt die Nachricht erst vollständig aus.
+Kompression und Verschlüsselung bleiben unabhängig schaltbar und werden vor
+der Aufteilung auf die gesamte Nachricht angewendet. Beide Seiten benötigen
+eine Programmversion mit Fragment-Unterstützung.
+
+Jedes Funkpaket bleibt auf 170 Bytes begrenzt. Pro Nachricht verarbeitet das
+Programm mit dieser Option bis zu 64 KiB UTF-8-Text. Fehlende Fragmente werden
+nicht erneut angefordert. Der Empfänger verwirft unvollständige Übertragungen
+nach 30 Sekunden ohne Fortschritt, sobald ein weiteres Fragment eintrifft.
