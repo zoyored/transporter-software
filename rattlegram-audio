@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+from payload import load_cipher, pack, unpack
+
+BIN = Path(__file__).resolve().parent / "bin"
+PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
+
+
+def send(packet, callsign):
+    with subprocess.Popen([BIN / "send-pcm", packet, callsign],
+                          stdout=subprocess.PIPE) as encoder:
+        with encoder.stdout:
+            player = subprocess.run(PCM + ["--playback", "--device=@DEFAULT_SINK@"],
+                                    stdin=encoder.stdout)
+        return int(bool(player.returncode or encoder.wait()))
+
+
+def messages(stream):
+    pending = b""
+    while chunk := stream.read1(4096):
+        *complete, pending = (pending + chunk).split(b"\0")
+        yield from complete
+    if pending:
+        raise ValueError("Decoder lieferte eine unvollständige Nachricht.")
+
+
+def listen(cipher):
+    with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
+                          stdout=subprocess.PIPE) as recorder:
+        try:
+            with subprocess.Popen([BIN / "listen-pcm", "--frames"], stdin=recorder.stdout,
+                                  stdout=subprocess.PIPE) as decoder:
+                recorder.stdout.close()
+                try:
+                    for packet in messages(decoder.stdout):
+                        try:
+                            message = unpack(packet, cipher)
+                        except ValueError as exc:
+                            print(f"Empfang verworfen: {exc}", file=sys.stderr)
+                            continue
+                        sys.stdout.buffer.write(message.encode("utf-8") + b"\n")
+                        sys.stdout.buffer.flush()
+                    decoder.wait()
+                finally:
+                    if decoder.poll() is None:
+                        decoder.terminate()
+            recorder_running = recorder.poll() is None
+        finally:
+            if recorder.poll() is None:
+                recorder.terminate()
+    return int(bool(recorder_running or recorder.returncode or decoder.returncode))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    modes = parser.add_subparsers(dest="mode", required=True)
+    tx = modes.add_parser("send")
+    tx.add_argument("--compress", action="store_true", help="zlib-Kompression aktivieren")
+    tx.add_argument("message")
+    tx.add_argument("callsign")
+    rx = modes.add_parser("listen")
+    for mode in (tx, rx):
+        mode.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+                          help="ChaCha20-Poly1305 mit gemeinsamem Schlüssel verwenden")
+    args = parser.parse_args()
+
+    try:
+        cipher = load_cipher(args.encrypt) if args.encrypt else None
+        packet = pack(args.message, args.compress, cipher) if args.mode == "send" else None
+        if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
+            raise ValueError("Bitte zuerst make im Programmverzeichnis ausführen.")
+        if not shutil.which("pacat"):
+            raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
+        if args.mode == "send":
+            return send(packet, args.callsign)
+        return listen(cipher)
+    except ImportError:
+        print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
