@@ -39,11 +39,23 @@ which plays them through the system's default audio output.
 ./rattlegram-audio send --file message.txt DL1ABC
 ```
 
-The file must contain UTF-8 text. Leading and trailing spaces, tabs, blank
-lines, and line endings are preserved, including at the end of the file.
+For UTF-8 text files, leading and trailing spaces, tabs, blank lines, and line
+endings are preserved, including at the end of the file.
 The receiver writes the message followed by its usual output newline.
-`--file` replaces the positional message and works with `--compress`,
-`--encrypt`, and `--no-length-limit`.
+`--file` replaces the positional message and automatically enables
+fragmentation when needed, up to 64 KiB of UTF-8 text. You can combine it
+with `--compress` and `--encrypt`.
+
+To send text from a PDF, install `pdftotext` from `poppler-utils` on the
+sender and pass the PDF to the same option.
+
+```sh
+./rattlegram-audio send --file "document.pdf" DL1ABC
+```
+
+The sender extracts embedded text using Poppler's layout mode and applies the
+message size limit to the resulting UTF-8 text. The receiver prints that text
+to stdout. Image-only scans require OCR before sending.
 
 ## Test locally without an audio device
 
@@ -99,10 +111,11 @@ The packet header is authenticated as associated data.
 
 ## Longer messages
 
-Use `--no-length-limit` to lift the single-packet limit.
+For a positional message, use `--no-length-limit` to lift the single-packet
+limit. With `--file`, fragmentation is already enabled.
 
 ```sh
-./rattlegram-audio send --no-length-limit --compress --file message.txt DL1ABC
+./rattlegram-audio send --no-length-limit --compress "A long message passed as an argument" DL1ABC
 ```
 
 The sender splits longer messages into numbered fragments. The receiver

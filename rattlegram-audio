@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 
-from payload import MAX_MESSAGE, MAX_PAYLOAD, Reassembler, load_cipher, packets
+from payload import MAX_MESSAGE, Reassembler, load_cipher, packets
 
 BIN = Path(__file__).resolve().parent / "bin"
 PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
@@ -63,6 +63,32 @@ def listen(cipher):
     return int(bool(recorder_running or recorder.returncode or decoder.returncode))
 
 
+def read_message_file(path):
+    pdf = path.suffix.lower() == ".pdf"
+    if pdf:
+        if not shutil.which("pdftotext"):
+            raise ValueError("Für PDF-Dateien wird pdftotext aus poppler-utils benötigt.")
+        command = ["pdftotext", "-layout", "-enc", "UTF-8", "-nopgbrk",
+                   os.path.abspath(path), "-"]
+        with subprocess.Popen(command, stdout=subprocess.PIPE) as converter:
+            try:
+                data = converter.stdout.read(MAX_MESSAGE + 1)
+                if len(data) <= MAX_MESSAGE and converter.wait():
+                    raise ValueError("Der Text konnte nicht aus der PDF-Datei gelesen werden.")
+            finally:
+                if converter.poll() is None:
+                    converter.kill()
+    else:
+        with path.open("rb") as source_file:
+            data = source_file.read(MAX_MESSAGE + 1)
+    if len(data) > MAX_MESSAGE:
+        raise ValueError(f"Der Nachrichtentext überschreitet das Limit von {MAX_MESSAGE} UTF-8-Bytes.")
+    message = data.decode("utf-8")
+    if pdf and not message.strip():
+        raise ValueError("Die PDF-Datei enthält keinen extrahierbaren Text.")
+    return message
+
+
 def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -73,7 +99,7 @@ def main():
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("--file", type=Path, metavar="DATEI",
-                        help="Nachricht als UTF-8 aus einer Datei lesen")
+                        help="Nachricht aus einer UTF-8-Textdatei oder PDF lesen")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     for mode in (tx, rx):
@@ -89,14 +115,10 @@ def main():
             raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
         if args.mode == "send":
             message = args.message
+            fragment = args.no_length_limit or args.file is not None
             if args.file is not None:
-                limit = MAX_MESSAGE if args.no_length_limit else MAX_PAYLOAD
-                with args.file.open("rb") as source_file:
-                    data = source_file.read(limit + 1)
-                if len(data) > limit:
-                    raise ValueError(f"Die Datei überschreitet das Limit von {limit} UTF-8-Bytes.")
-                message = data.decode("utf-8")
-            frames = list(packets(message, args.compress, cipher, args.no_length_limit))
+                message = read_message_file(args.file)
+            frames = list(packets(message, args.compress, cipher, fragment))
             return send(frames, args.callsign)
         return listen(cipher)
     except ImportError:
