@@ -35,17 +35,6 @@ MAX_PENDING = 8
 FRAGMENT_TIMEOUT = 30
 
 
-def load_cipher(path):
-    # Plain and compressed-only operation work without cryptography installed.
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-
-    with open(path, "rb") as key_file:
-        key = key_file.read(33)
-    if len(key) != 32:
-        raise ValueError("Die Schlüsseldatei muss genau 32 rohe Bytes enthalten.")
-    return ChaCha20Poly1305(key)
-
-
 def encrypt_data(data, header, cipher):
     if cipher is None:
         return data
