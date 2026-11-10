@@ -7,6 +7,8 @@ You need Python 3.8 or later, GNU Make, a C++17 compiler, and `pacat` from
 PulseAudio interface.
 
 ```sh
+git clone https://github.com/zoyored/transporter-software.git
+cd transporter-software
 make
 ```
 
