@@ -7,18 +7,19 @@ import subprocess
 import sys
 import tempfile
 
-from payload import MAX_FILE, Reassembler, file_packets, load_cipher, packets
+from payload import MAX_FILE, Reassembler, file_packets, packets
+from settings import load_cipher, load_settings
 
 BIN = Path(__file__).resolve().parent / "bin"
-PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
 
 
-def send(frames, callsign):
-    with subprocess.Popen(PCM + ["--playback", "--device=@DEFAULT_SINK@"],
+def send(frames, callsign, audio):
+    codec_args = audio.codec_args() + [str(audio.noise_symbols), str(audio.carrier_frequency)]
+    with subprocess.Popen(audio.pacat_args() + ["--playback", "--device=@DEFAULT_SINK@"],
                           stdin=subprocess.PIPE) as player:
         with player.stdin:
             for frame in frames:
-                encoder = subprocess.run([BIN / "send-pcm", frame, callsign],
+                encoder = subprocess.run([BIN / "send-pcm", frame, callsign, *codec_args],
                                          stdout=player.stdin)
                 if encoder.returncode:
                     return 1
@@ -41,20 +42,29 @@ def save_file(output, data):
         os.link(staged, output)
 
 
-def listen(cipher, require_encryption, output, receive_dir):
+def report_file_start(sender, transfer_id, count):
+    details = f", ID {transfer_id}" if transfer_id else ""
+    print(f"Dateiübertragung begonnen: {sender}, Funkpakete: {count}{details}", file=sys.stderr)
+
+
+def listen(cipher, require_encryption, output, receive_dir, audio):
     if output is not None and os.path.lexists(output):
         raise ValueError(f"Die Zieldatei existiert bereits: {output}")
-    reassembler = Reassembler(cipher, require_encryption)
-    with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
+    reassembler = Reassembler(cipher, require_encryption, report_file_start)
+    with subprocess.Popen(audio.pacat_args() + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
-            with subprocess.Popen([BIN / "listen-pcm", "--frames"], stdin=recorder.stdout,
+            with subprocess.Popen([BIN / "listen-pcm", "--metadata", *audio.codec_args()], stdin=recorder.stdout,
                                   stdout=subprocess.PIPE) as decoder:
                 recorder.stdout.close()
                 try:
-                    for packet in messages(decoder.stdout):
+                    for frame in messages(decoder.stdout):
+                        callsign, corrections, packet = frame.split(b"\t", 2)
+                        sender = callsign.decode("ascii").strip() or "Unbekannt"
+                        print(f"Empfang {sender}: {int(corrections)} korrigierte Nutzdatenbits",
+                              file=sys.stderr)
                         try:
-                            transfer = reassembler.receive(packet)
+                            transfer = reassembler.receive(packet, sender)
                         except ValueError as exc:
                             print(f"Empfang verworfen: {exc}", file=sys.stderr)
                             continue
@@ -63,6 +73,7 @@ def listen(cipher, require_encryption, output, receive_dir):
                         if isinstance(transfer.data, bytes):
                             if output is not None:
                                 save_file(output, transfer.data)
+                                print(f"Datei von {sender} gespeichert: {output}", file=sys.stderr)
                                 return 0
                             receive_dir.mkdir(parents=True, exist_ok=True)
                             transfer_id = transfer.transfer_id or os.urandom(8).hex()
@@ -72,9 +83,9 @@ def listen(cipher, require_encryption, output, receive_dir):
                             except OSError as exc:
                                 print(f"Datei konnte nicht gespeichert werden: {exc}", file=sys.stderr)
                             else:
-                                print(f"Datei gespeichert: {target}", file=sys.stderr)
+                                print(f"Datei von {sender} gespeichert: {target}", file=sys.stderr)
                         else:
-                            sys.stdout.buffer.write(transfer.data.encode("utf-8") + b"\n")
+                            sys.stdout.buffer.write(f"{sender}: {transfer.data}\n".encode("utf-8"))
                             sys.stdout.buffer.flush()
                     decoder.wait()
                 finally:
@@ -93,34 +104,38 @@ def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(dest="mode", required=True)
     tx = modes.add_parser("send")
-    tx.add_argument("--compress", action="store_true", help="zlib-Kompression aktivieren")
-    tx.add_argument("--no-length-limit", action="store_true",
+    tx.add_argument("-c", "--compress", action="store_true", help="zlib-Kompression aktivieren")
+    tx.add_argument("-n", "--no-length-limit", action="store_true",
                     help="Einzelpaketlimit aufheben und lange Nachrichten fragmentieren")
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
-    source.add_argument("--file", type=Path, metavar="DATEI",
+    source.add_argument("-f", "--file", type=Path, metavar="DATEI",
                         help="Datei unverändert übertragen (Base64)")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     targets = rx.add_mutually_exclusive_group()
-    targets.add_argument("--output", type=Path, metavar="DATEI",
+    targets.add_argument("-o", "--output", type=Path, metavar="DATEI",
                          help="Eine empfangene Datei speichern und beenden")
-    targets.add_argument("--receive-dir", type=Path, default=Path("received"), metavar="ORDNER",
-                         help="Empfangene Dateien automatisch speichern (Standard: received)")
-    tx.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+    targets.add_argument("-d", "--receive-dir", type=Path, metavar="ORDNER",
+                         help="Empfangsordner (Standard: ~/.rattlegram-audio/receieved)")
+    tx.add_argument("-e", "--encrypt", action="store_true",
                     help="Mit ChaCha20-Poly1305 verschlüsseln")
     keys = rx.add_mutually_exclusive_group()
-    keys.add_argument("--encrypt", type=Path, metavar="SCHLÜSSELDATEI",
+    keys.add_argument("-e", "--encrypt", action="store_true",
                       help="Ausschließlich authentifizierte Übertragungen empfangen")
-    keys.add_argument("--key-file", type=Path, metavar="SCHLÜSSELDATEI",
-                      help="Verschlüsselte und unverschlüsselte Übertragungen empfangen")
+    keys.add_argument("-k", "--key-file", action="store_true",
+                      help="Lokalen Schlüssel verlangen und gemischten Empfang zulassen")
     args = parser.parse_args()
     if args.mode == "send" and args.file is not None and args.compress:
         tx.error("--compress kann nicht mit --file verwendet werden.")
 
     try:
-        key = args.encrypt or getattr(args, "key_file", None)
-        cipher = load_cipher(key) if key else None
+        directory = Path.home() / ".rattlegram-audio"
+        audio = load_settings(directory)
+        use_key = args.encrypt
+        if args.mode == "listen":
+            use_key = use_key or args.key_file or os.path.lexists(directory / "key")
+        cipher = load_cipher(directory) if use_key else None
         if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
             raise ValueError("Bitte zuerst make im Programmverzeichnis ausführen.")
         if not shutil.which("pacat"):
@@ -132,8 +147,9 @@ def main():
                 frames = list(file_packets(data, cipher))
             else:
                 frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
-            return send(frames, args.callsign)
-        return listen(cipher, args.encrypt is not None, args.output, args.receive_dir)
+            return send(frames, args.callsign, audio)
+        receive_dir = args.receive_dir or directory / "receieved"
+        return listen(cipher, args.encrypt, args.output, receive_dir, audio)
     except ImportError:
         print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
         return 1

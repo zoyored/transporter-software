@@ -28,6 +28,20 @@ class PayloadTest(unittest.TestCase):
         self.assertIsNone(receiver.receive(first))
         self.assertEqual(receiver.receive(second).data, data)
 
+    def test_file_start_and_sender_scoped_reassembly(self):
+        starts = []
+        data = b"file data" * 20
+        first, second = file_packets(data)
+        receiver = Reassembler(on_file_start=lambda *args: starts.append(args))
+        self.assertIsNone(receiver.receive(first, "SENDER1"))
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0][0], "SENDER1")
+        self.assertEqual(starts[0][2], 2)
+        self.assertIsNone(receiver.receive(first, "SENDER1"))
+        self.assertIsNone(receiver.receive(second, "SENDER2"))
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(receiver.receive(second, "SENDER1").data, data)
+
     def test_corrupt_payload_and_unknown_flags(self):
         frame, = packets("text")
         for offset in (0, 1, 13):

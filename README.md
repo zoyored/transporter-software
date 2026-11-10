@@ -12,6 +12,35 @@ cd transporter-software
 make
 ```
 
+## Configuration
+
+The first `send` or `listen` creates `~/.rattlegram-audio/config.ini` if it
+does not exist. Edit the file to change the audio settings used by both
+commands. Existing settings are retained across runs. Missing entries use
+the defaults below.
+
+```ini
+[audio]
+NOISE_SYMBOLS = 1
+CARRIER_FREQUENCY = 1500
+RATE = 8000
+BITS = 16
+CHANNEL = 0
+MAPPING = 4
+```
+
+| Setting | Supported values |
+| --- | --- |
+| `NOISE_SYMBOLS` | 0–32 leading noise symbols per transmitted packet |
+| `CARRIER_FREQUENCY` | 900–3100 Hz, transmitter carrier |
+| `RATE` | 8000 or 48000 Hz |
+| `BITS` | 8-bit unsigned PCM, or 16-, 24-, or 32-bit signed little-endian PCM. The codec processes 16-bit samples internally. |
+| `CHANNEL` | 0 mono, 1 stereo left, 2 stereo right, 3 dual mono with stereo mix on receive, 4 stereo I/Q |
+| `MAPPING` | 2 BPSK, 4 QPSK, 8 8-PSK, 16 16-QAM |
+
+Use matching mappings on both sides. Select the channel mode appropriate
+for each audio connection.
+
 ## Receive
 
 ```sh
@@ -19,8 +48,9 @@ make
 ```
 
 The receiver listens on the system's default audio input and writes each
-successfully decoded message to stdout immediately, followed by a newline.
-Press Ctrl+C to stop. To process or save messages, redirect stdout or pipe it
+successfully decoded message to stdout immediately as `CALLSIGN: message`,
+followed by a newline. The call sign comes from the radio preamble and
+does not authenticate the sender. Press Ctrl+C to stop. To process or save messages, redirect stdout or pipe it
 into another command, such as `./rattlegram-audio listen | tee received.txt`.
 
 ## Send
@@ -47,16 +77,22 @@ Start the receiver, then send the file.
 ```
 
 The listener detects files automatically and saves them byte for byte as
-`received/rattlegram-<transfer-id>.bin`. Use `--receive-dir DIR` to choose
+`~/.rattlegram-audio/receieved/rattlegram-<transfer-id>.bin`. Use `--receive-dir DIR` to choose
 another directory or `--output PATH` to save one file under a specific name
-and exit. Existing files are never overwritten. Decoded text still goes to
-stdout. File status and errors go to stderr.
+and exit. Existing files are never overwritten. The listener reports the
+sender and packet count when it receives the first file packet. It reports
+the final path after verification and saving. File status and errors go to
+stderr.
+
+Reception quality also goes to stderr as the number of corrected payload
+bits per decoded radio packet. A lower count means the decoder needed
+fewer corrections. This count is separate from signal strength or SNR.
 
 Files up to 1 MiB are supported. The sender automatically splits larger
 payloads into multiple radio packets. Missing fragments are never requested
 again. Large files can take many minutes to transmit. Compression is
-unavailable for `--file`. To encrypt a file, use `send --encrypt rattlegram.key`
-and supply the same key to the listener.
+unavailable for `--file`. To encrypt a file, add `--encrypt` to the send
+command and configure the same key on the listener.
 
 ## Test locally without an audio device
 
@@ -64,8 +100,8 @@ and supply the same key to the listener.
 ./bin/send-pcm "Hello from Rattlegram!" DL1ABC | ./bin/listen-pcm
 ```
 
-Both directions use 8 kHz mono, signed 16-bit PCM in native byte order and
-QPSK (mapping 4). The sender uses a 1500 Hz carrier. The audio pipeline
+The standalone codecs default to 8 kHz mono, signed 16-bit little-endian
+PCM and QPSK (mapping 4). The sender defaults to a 1500 Hz carrier. The audio pipeline
 runs without WAV files.
 
 The encoder and decoder come from
@@ -79,24 +115,30 @@ automatically detects compressed packets.
 
 ```sh
 ./rattlegram-audio send --compress "Repeat repeat repeat" DL1ABC
-./rattlegram-audio send --encrypt rattlegram.key "Confidential message" DL1ABC
-./rattlegram-audio send --compress --encrypt rattlegram.key "Both options" DL1ABC
+./rattlegram-audio send --encrypt "Confidential message" DL1ABC
+./rattlegram-audio send --compress --encrypt "Both options" DL1ABC
 ```
 
-Encryption requires the Python package `cryptography`. Generate a random key
-once and use the same key file on both devices. The file contains exactly
-32 raw bytes.
+Encryption requires the Python package `cryptography`. Both devices use the
+same 32-byte binary key at `~/.rattlegram-audio/key`. Generate it once, then
+copy it securely to the other device and set mode `600` on both.
 
 ```sh
-(umask 077; set -C; openssl rand 32 > rattlegram.key)
-./rattlegram-audio listen --encrypt rattlegram.key
+mkdir -p -m 700 ~/.rattlegram-audio
+(umask 077; set -C; openssl rand 32 > ~/.rattlegram-audio/key)
+chmod 600 ~/.rattlegram-audio/key
+./rattlegram-audio listen --encrypt
 ```
 
-The listener reads the encryption flag automatically. Use
-`listen --key-file rattlegram.key` to receive both encrypted and unencrypted
-traffic, or `listen --encrypt rattlegram.key` to require authentication.
-Encrypted transfers need a matching key. The call sign and frame header
-remain visible.
+The key must be a regular file owned by the current user with exactly mode
+`600`. The program rejects insecure permissions and symbolic links.
+Encryption options no longer take a key path.
+
+The listener automatically loads the key if it exists, and reads the
+encryption flag on each packet. Plain `listen` accepts encrypted and
+unencrypted traffic. Use `listen --key-file` to require the key at startup
+while accepting both kinds of traffic, or `listen --encrypt` to require
+authenticated transfers. The call sign and frame header remain visible.
 
 One RG2 packet holds up to 106 uncompressed plaintext bytes, or 82 with
 encryption. With compression, capacity depends on how well the text
@@ -121,6 +163,19 @@ Each radio packet still has a 170-byte limit. With this option, the program
 handles up to 64 KiB of UTF-8 text per message. Missing fragments are never
 requested again. When another fragment arrives, the receiver discards any
 incomplete transfers that have made no progress for 30 seconds.
+
+## Short options
+
+| Short | Long | Command |
+| --- | --- | --- |
+| `-c` | `--compress` | `send` |
+| `-e` | `--encrypt` | `send`, `listen` |
+| `-f` | `--file PATH` | `send` |
+| `-n` | `--no-length-limit` | `send` |
+| `-k` | `--key-file` | `listen` |
+| `-o` | `--output PATH` | `listen` |
+| `-d` | `--receive-dir DIR` | `listen` |
+| `-h` | `--help` | All commands |
 
 ## RG2 wire format
 

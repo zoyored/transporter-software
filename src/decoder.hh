@@ -124,7 +124,9 @@ class Decoder : public DecoderInterface {
     cmplx temp[extended_length], freq[symbol_length], prev[pay_car_cnt],
             cons[pay_car_cnt];
     float power[spectrum_width]{}, index[pay_car_cnt]{}, phase[pay_car_cnt]{};
-    code_type code[code_len];
+    // 16-QAM demaps up to 4096 soft bits, including transmitted padding.
+    // The polar decoder uses only the first code_len bits.
+    code_type code[2 * code_len];
     int8_t generator[255 * 71];
     int8_t soft[pre_seq_len];
     uint8_t data[(pre_seq_len + 7) / 8];
