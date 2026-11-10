@@ -6,19 +6,22 @@ import shutil
 import subprocess
 import sys
 
-from payload import load_cipher, pack, unpack
+from payload import Reassembler, load_cipher, packets
 
 BIN = Path(__file__).resolve().parent / "bin"
 PCM = ["pacat", "--raw", "--rate=8000", "--format=s16ne", "--channels=1"]
 
 
-def send(packet, callsign):
-    with subprocess.Popen([BIN / "send-pcm", packet, callsign],
-                          stdout=subprocess.PIPE) as encoder:
-        with encoder.stdout:
-            player = subprocess.run(PCM + ["--playback", "--device=@DEFAULT_SINK@"],
-                                    stdin=encoder.stdout)
-        return int(bool(player.returncode or encoder.wait()))
+def send(frames, callsign):
+    with subprocess.Popen(PCM + ["--playback", "--device=@DEFAULT_SINK@"],
+                          stdin=subprocess.PIPE) as player:
+        with player.stdin:
+            for frame in frames:
+                encoder = subprocess.run([BIN / "send-pcm", frame, callsign],
+                                         stdout=player.stdin)
+                if encoder.returncode:
+                    return 1
+        return int(bool(player.wait()))
 
 
 def messages(stream):
@@ -31,6 +34,7 @@ def messages(stream):
 
 
 def listen(cipher):
+    reassembler = Reassembler()
     with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
@@ -40,9 +44,11 @@ def listen(cipher):
                 try:
                     for packet in messages(decoder.stdout):
                         try:
-                            message = unpack(packet, cipher)
+                            message = reassembler.receive(packet, cipher)
                         except ValueError as exc:
                             print(f"Empfang verworfen: {exc}", file=sys.stderr)
+                            continue
+                        if message is None:
                             continue
                         sys.stdout.buffer.write(message.encode("utf-8") + b"\n")
                         sys.stdout.buffer.flush()
@@ -62,6 +68,8 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     tx = modes.add_parser("send")
     tx.add_argument("--compress", action="store_true", help="zlib-Kompression aktivieren")
+    tx.add_argument("--no-length-limit", action="store_true",
+                    help="Einzelpaketlimit aufheben und lange Nachrichten fragmentieren")
     tx.add_argument("message")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
@@ -72,13 +80,13 @@ def main():
 
     try:
         cipher = load_cipher(args.encrypt) if args.encrypt else None
-        packet = pack(args.message, args.compress, cipher) if args.mode == "send" else None
         if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
             raise ValueError("Bitte zuerst make im Programmverzeichnis ausführen.")
         if not shutil.which("pacat"):
             raise ValueError("pacat fehlt. Bitte pulseaudio-utils installieren.")
         if args.mode == "send":
-            return send(packet, args.callsign)
+            frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
+            return send(frames, args.callsign)
         return listen(cipher)
     except ImportError:
         print("Für Verschlüsselung wird Python cryptography benötigt.", file=sys.stderr)
