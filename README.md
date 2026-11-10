@@ -1,103 +1,103 @@
-# Rattlegram Audio für Linux
+# Rattlegram Audio for Linux
 
-## Bauen
+## Build
 
-Benötigt werden Python 3.8 oder neuer, GNU Make, ein C++17-Compiler und `pacat` aus
-`pulseaudio-utils`. Die Audiowiedergabe und -aufnahme laufen über PulseAudio
-oder über die PulseAudio-Schnittstelle von PipeWire.
+You need Python 3.8 or later, GNU Make, a C++17 compiler, and `pacat` from
+`pulseaudio-utils`. Audio playback and recording use PulseAudio or PipeWire's
+PulseAudio interface.
 
 ```sh
 make
 ```
 
-## Empfangen
+## Receive
 
 ```sh
 ./rattlegram-audio listen
 ```
 
-Der Empfänger hört auf der Standardquelle des Systems und schreibt jede
-erfolgreich decodierte Nachricht sofort mit abschließendem Zeilenumbruch
-auf stdout. Mit Strg+C beenden. Für die Weiterverarbeitung oder Aufzeichnung
-lässt sich stdout umleiten, etwa mit `./rattlegram-audio listen | tee empfang.txt`.
+The receiver listens on the system's default audio input and writes each
+successfully decoded message to stdout immediately, followed by a newline.
+Press Ctrl+C to stop. To process or save messages, redirect stdout or pipe it
+into another command, such as `./rattlegram-audio listen | tee received.txt`.
 
-## Senden
-
-```sh
-./rattlegram-audio send "Hallo, Grüße!" DL1ABC
-```
-
-Die Nachricht darf 1 bis 170 UTF-8-Bytes lang sein. Das Rufzeichen besteht aus
-1 bis 9 ASCII-Buchstaben oder Ziffern. Der Sender pipet die PCM-Samples direkt
-an `pacat`, das sie über die Standardausgabe des Audiosystems abspielt.
-
-## Lokaler Test ohne Audiogerät
+## Send
 
 ```sh
-./bin/send-pcm "Hallo, Grüße!" DL1ABC | ./bin/listen-pcm
+./rattlegram-audio send "Hello from Rattlegram!" DL1ABC
 ```
 
-Beide Richtungen arbeiten mit 8 kHz, Mono, vorzeichenbehaftetem 16-Bit-PCM in
-nativer Byte-Reihenfolge und QPSK (Mapping 4). Der Sender verwendet 1500 Hz
-Trägerfrequenz. Die Audio-Pipeline benötigt keine WAV-Dateien.
+A message can contain 1 to 170 UTF-8 bytes. The call sign must contain 1 to 9
+ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
+which plays them through the system's default audio output.
 
-Der Encoder und der Decoder stammen aus
+## Test locally without an audio device
+
+```sh
+./bin/send-pcm "Hello from Rattlegram!" DL1ABC | ./bin/listen-pcm
+```
+
+Both directions use 8 kHz mono, signed 16-bit PCM in native byte order and
+QPSK (mapping 4). The sender uses a 1500 Hz carrier. The audio pipeline
+runs without WAV files.
+
+The encoder and decoder come from
 [bastibl/rattlegram-cli](https://github.com/bastibl/rattlegram-cli).
-Die mitgelieferte Lizenz gilt für diesen übernommenen Code.
+The included license applies to that code.
 
-## Kompression und Verschlüsselung
+## Compression and encryption
 
-Die Schalter lassen sich beim Senden unabhängig kombinieren. Der Empfänger
-erkennt komprimierte Pakete automatisch.
+You can enable either option independently when sending. The receiver
+automatically detects compressed packets.
 
 ```sh
-./rattlegram-audio send --compress "Wiederholung Wiederholung" DL1ABC
-./rattlegram-audio send --encrypt rattlegram.key "Vertraulicher Text" DL1ABC
-./rattlegram-audio send --compress --encrypt rattlegram.key "Beide Optionen" DL1ABC
+./rattlegram-audio send --compress "Repeat repeat repeat" DL1ABC
+./rattlegram-audio send --encrypt rattlegram.key "Confidential message" DL1ABC
+./rattlegram-audio send --compress --encrypt rattlegram.key "Both options" DL1ABC
 ```
 
-Für Verschlüsselung muss das Python-Paket `cryptography` installiert sein.
-Einmal einen zufälligen Schlüssel erzeugen und dieselbe Datei auf beiden
-Geräten verwenden. Die Datei enthält genau 32 rohe Bytes.
+Encryption requires the Python package `cryptography`. Generate a random key
+once and use the same key file on both devices. The file contains exactly
+32 raw bytes.
 
 ```sh
 (umask 077; set -C; openssl rand 32 > rattlegram.key)
 ./rattlegram-audio listen --encrypt rattlegram.key
 ```
 
-Mit `listen --encrypt` werden ausschließlich Pakete ausgegeben, die sich mit
-dem angegebenen Schlüssel authentifizieren lassen. Ohne Schlüssel werden
-Klartext und komprimierte Pakete empfangen. Meldungen zu verworfenen Paketen
-gehen an stderr. Das Rufzeichen bleibt im Rattlegram-Funkkopf sichtbar.
+With `listen --encrypt`, the receiver outputs only packets that authenticate
+with the supplied key. Without a key, it accepts plaintext and
+compression-only packets. Diagnostics for discarded packets go to stderr.
+The call sign remains visible in the Rattlegram packet header.
 
-Ohne Schalter werden gewöhnliche Rattlegram-Textpakete mit bis zu 170
-UTF-8-Bytes gesendet. Das Präfix `~RG1` ist für erweiterte Pakete reserviert.
-Mit Verschlüsselung allein passen bis zu 103 UTF-8-Bytes in ein Paket.
-Mit Kompression hängt die Nutzlast von der Komprimierbarkeit ab. Passt das
-Paket nach Verarbeitung nicht in 170 Funkbytes, bricht der Sender mit einer
-Fehlermeldung ab. Für erweiterte Pakete brauchen beide Seiten dieses Programm.
+By default, the sender transmits standard Rattlegram text packets with up
+to 170 UTF-8 bytes. The `~RG1` prefix is reserved for extended packets.
+With encryption alone, a single packet holds up to 103 UTF-8 bytes.
+With compression, the capacity depends on how well the text compresses.
+If the encoded packet exceeds 170 bytes, the sender exits with an error.
+Both sides need this program to use extended packets.
 
-Erweiterte Pakete bestehen aus `~RG1<Flags>:` und Base85-Daten. Flag 1 steht
-für zlib, Flag 2 für ChaCha20-Poly1305 und Flag 3 für beides. Bei Flag 3 wird
-vor der Verschlüsselung komprimiert. Verschlüsselte Base85-Daten enthalten
-einen zufälligen 12-Byte-Nonce, den Ciphertext und den 16-Byte-Tag. Der
-Paketkopf wird als Associated Data authentifiziert.
+Extended packets consist of `~RG1<flags>:` followed by Base85 data. Flag 1
+indicates zlib, flag 2 indicates ChaCha20-Poly1305, and flag 3 enables both.
+With flag 3, compression runs before encryption. The encrypted Base85
+data contains a random 12-byte nonce, the ciphertext, and a 16-byte tag.
+The packet header is authenticated as associated data.
 
-## Längere Nachrichten
+## Longer messages
 
-Mit `--no-length-limit` entfällt die Beschränkung auf ein einzelnes Funkpaket.
+Use `--no-length-limit` to lift the single-packet limit.
 
 ```sh
-./rattlegram-audio send --no-length-limit --compress "$(cat nachricht.txt)" DL1ABC
+./rattlegram-audio send --no-length-limit --compress "$(cat message.txt)" DL1ABC
 ```
 
-Der Sender teilt längere Nachrichten in nummerierte Fragmente auf. Der Empfänger
-setzt sie automatisch zusammen und gibt die Nachricht erst vollständig aus.
-Kompression und Verschlüsselung bleiben unabhängig schaltbar und werden vor
-der Aufteilung auf die gesamte Nachricht angewendet. Beide Seiten benötigen
-eine Programmversion mit Fragment-Unterstützung.
+The sender splits longer messages into numbered fragments. The receiver
+reassembles them automatically and outputs the message once it is complete.
+Compression and encryption remain independently configurable and apply to
+the full message before fragmentation. Both sides need a version that
+supports fragmentation.
 
-Jedes Funkpaket bleibt auf 170 Bytes begrenzt. Pro Nachricht verarbeitet das
-Programm mit dieser Option bis zu 64 KiB UTF-8-Text. Fehlende Fragmente werden
-nicht erneut angefordert. Der Empfänger verwirft unvollständige Übertragungen
-nach 30 Sekunden ohne Fortschritt, sobald ein weiteres Fragment eintrifft.
+Each radio packet still has a 170-byte limit. With this option, the program
+handles up to 64 KiB of UTF-8 text per message. Missing fragments are never
+requested again. When another fragment arrives, the receiver discards any
+incomplete transfers that have made no progress for 30 seconds.
