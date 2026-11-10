@@ -41,20 +41,29 @@ def save_file(output, data):
         os.link(staged, output)
 
 
+def report_file_start(sender, transfer_id, count):
+    details = f", ID {transfer_id}" if transfer_id else ""
+    print(f"Dateiübertragung begonnen: {sender}, Funkpakete: {count}{details}", file=sys.stderr)
+
+
 def listen(cipher, require_encryption, output, receive_dir):
     if output is not None and os.path.lexists(output):
         raise ValueError(f"Die Zieldatei existiert bereits: {output}")
-    reassembler = Reassembler(cipher, require_encryption)
+    reassembler = Reassembler(cipher, require_encryption, report_file_start)
     with subprocess.Popen(PCM + ["--record", "--device=@DEFAULT_SOURCE@", "--latency-msec=50"],
                           stdout=subprocess.PIPE) as recorder:
         try:
-            with subprocess.Popen([BIN / "listen-pcm", "--frames"], stdin=recorder.stdout,
+            with subprocess.Popen([BIN / "listen-pcm", "--metadata"], stdin=recorder.stdout,
                                   stdout=subprocess.PIPE) as decoder:
                 recorder.stdout.close()
                 try:
-                    for packet in messages(decoder.stdout):
+                    for frame in messages(decoder.stdout):
+                        callsign, corrections, packet = frame.split(b"\t", 2)
+                        sender = callsign.decode("ascii").strip() or "Unbekannt"
+                        print(f"Empfang {sender}: {int(corrections)} korrigierte Nutzdatenbits",
+                              file=sys.stderr)
                         try:
-                            transfer = reassembler.receive(packet)
+                            transfer = reassembler.receive(packet, sender)
                         except ValueError as exc:
                             print(f"Empfang verworfen: {exc}", file=sys.stderr)
                             continue
@@ -63,6 +72,7 @@ def listen(cipher, require_encryption, output, receive_dir):
                         if isinstance(transfer.data, bytes):
                             if output is not None:
                                 save_file(output, transfer.data)
+                                print(f"Datei von {sender} gespeichert: {output}", file=sys.stderr)
                                 return 0
                             receive_dir.mkdir(parents=True, exist_ok=True)
                             transfer_id = transfer.transfer_id or os.urandom(8).hex()
@@ -72,9 +82,9 @@ def listen(cipher, require_encryption, output, receive_dir):
                             except OSError as exc:
                                 print(f"Datei konnte nicht gespeichert werden: {exc}", file=sys.stderr)
                             else:
-                                print(f"Datei gespeichert: {target}", file=sys.stderr)
+                                print(f"Datei von {sender} gespeichert: {target}", file=sys.stderr)
                         else:
-                            sys.stdout.buffer.write(transfer.data.encode("utf-8") + b"\n")
+                            sys.stdout.buffer.write(f"{sender}: {transfer.data}\n".encode("utf-8"))
                             sys.stdout.buffer.flush()
                     decoder.wait()
                 finally:

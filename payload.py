@@ -6,6 +6,7 @@ import re
 import struct
 import time
 import zlib
+from functools import partial
 from typing import NamedTuple, Optional, Union
 
 MAX_PAYLOAD = 170
@@ -196,10 +197,11 @@ def decode_body(body, flags, transfer_id, count, cipher):
 class Reassembler:
     """Collect bounded sets of fragments and decode only complete transfers."""
 
-    def __init__(self, cipher=None, require_encryption=False):
+    def __init__(self, cipher=None, require_encryption=False, on_file_start=None):
         self.pending = {}
         self.cipher = cipher
         self.require_encryption = require_encryption
+        self.on_file_start = on_file_start
 
     def select_cipher(self, encrypted):
         if encrypted and self.cipher is None:
@@ -208,15 +210,18 @@ class Reassembler:
             raise ValueError("Unverschlüsselte Übertragung verworfen.")
         return self.cipher if encrypted else None
 
-    def receive(self, packet):
+    def receive(self, packet, sender=None):
         if not 1 <= len(packet) <= MAX_PAYLOAD:
             raise ValueError("Ungültige Funkpaketlänge.")
         if packet.startswith(PREFIX):
             flags, transfer_id, index, count, chunk = decode_header(packet)
             cipher = self.select_cipher(flags & ENCRYPTED)
             limit = (MAX_FILE + NONCE_SIZE + TAG_SIZE) if flags & FILE else MAX_WIRE
-            body = self.assemble((PREFIX, transfer_id), flags, index, count,
-                                 chunk, CHUNK_SIZE, limit)
+            start = None
+            if index == 0 and flags & FILE and self.on_file_start is not None:
+                start = partial(self.on_file_start, sender, transfer_id.hex(), count)
+            body = self.assemble((sender, PREFIX, transfer_id), flags, index, count,
+                                 chunk, CHUNK_SIZE, limit, start)
             if body is not None:
                 return decode_body(body, flags, transfer_id, count, cipher)
             return None
@@ -225,14 +230,21 @@ class Reassembler:
             if not header:
                 raise ValueError("Ungültiger Fragmentkopf.")
             transfer_id, index, count = header.groups()
-            packet = self.assemble((LEGACY_FRAGMENT_PREFIX, transfer_id), 0,
-                                   int(index, 16), int(count, 16), packet[header.end():],
-                                   LEGACY_CHUNK_SIZE, MAX_FILE_WIRE)
+            transfer_id = transfer_id.decode("ascii")
+            index, count = int(index, 16), int(count, 16)
+            chunk = packet[header.end():]
+            start = None
+            if index == 0 and chunk[:6] in FILE_HEADERS and self.on_file_start is not None:
+                start = partial(self.on_file_start, sender, transfer_id, count)
+            packet = self.assemble((sender, LEGACY_FRAGMENT_PREFIX, transfer_id), 0,
+                                   index, count, chunk, LEGACY_CHUNK_SIZE, MAX_FILE_WIRE, start)
             if packet is None:
                 return None
-            return self.decode_legacy(packet, MAX_MESSAGE, transfer_id.decode("ascii"))
+            return self.decode_legacy(packet, MAX_MESSAGE, transfer_id)
         if VERSION_PREFIX.match(packet) and not packet.startswith(LEGACY_PREFIX):
             raise ValueError("Unbekannte Rattlegram-Protokollversion.")
+        if packet[:6] in FILE_HEADERS and self.on_file_start is not None:
+            self.on_file_start(sender, None, 1)
         return self.decode_legacy(packet, MAX_PAYLOAD)
 
     def decode_legacy(self, packet, limit, transfer_id=None):
@@ -242,7 +254,7 @@ class Reassembler:
             return Transfer(unpack_legacy_file(packet, cipher), transfer_id)
         return Transfer(unpack_legacy_text(packet, cipher, limit))
 
-    def assemble(self, key, flags, index, count, chunk, chunk_size, limit):
+    def assemble(self, key, flags, index, count, chunk, chunk_size, limit, start=None):
         max_count = (limit + chunk_size - 1) // chunk_size
         if not 0 <= index < count <= max_count or not 1 <= len(chunk) <= chunk_size:
             raise ValueError("Ungültige Fragmentnummer oder -länge.")
@@ -259,6 +271,8 @@ class Reassembler:
             key, (now, flags, count, {}))
         if (flags, count) != (expected_flags, expected_count):
             raise ValueError("Widersprüchliche Fragmentköpfe.")
+        if start is not None and index == 0 and index not in parts:
+            start()
         if count == 1:
             return chunk
         if index in parts:

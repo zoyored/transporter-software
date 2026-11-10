@@ -19,8 +19,9 @@ make
 ```
 
 The receiver listens on the system's default audio input and writes each
-successfully decoded message to stdout immediately, followed by a newline.
-Press Ctrl+C to stop. To process or save messages, redirect stdout or pipe it
+successfully decoded message to stdout immediately as `CALLSIGN: message`,
+followed by a newline. The call sign comes from the radio preamble and
+does not authenticate the sender. Press Ctrl+C to stop. To process or save messages, redirect stdout or pipe it
 into another command, such as `./rattlegram-audio listen | tee received.txt`.
 
 ## Send
@@ -49,8 +50,14 @@ Start the receiver, then send the file.
 The listener detects files automatically and saves them byte for byte as
 `received/rattlegram-<transfer-id>.bin`. Use `--receive-dir DIR` to choose
 another directory or `--output PATH` to save one file under a specific name
-and exit. Existing files are never overwritten. Decoded text still goes to
-stdout. File status and errors go to stderr.
+and exit. Existing files are never overwritten. The listener reports the
+sender and packet count when it receives the first file packet. It reports
+the final path after verification and saving. File status and errors go to
+stderr.
+
+Reception quality also goes to stderr as the number of corrected payload
+bits per decoded radio packet. A lower count means the decoder needed
+fewer corrections. This count is separate from signal strength or SNR.
 
 Files up to 1 MiB are supported. The sender automatically splits larger
 payloads into multiple radio packets. Missing fragments are never requested
