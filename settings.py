@@ -20,8 +20,7 @@ CHANNEL = 0
 MAPPING = 4
 
 [gpg]
-signer_fingerprint =
-recipient_fingerprint =
+# NAME = FULL_FINGERPRINT
 """
 
 
@@ -34,6 +33,7 @@ class AudioSettings:
     channel: int
     mapping: int
     gpg_signers: dict = field(default_factory=dict)
+    gpg_keys: dict = field(default_factory=dict)
     gpg_signer: Optional[str] = None
     gpg_recipient: Optional[str] = None
 
@@ -71,8 +71,10 @@ def load_settings(directory):
         audio = config["audio"]
         signers = {call.upper(): fingerprint(key) for call, key in
                    config.items("gpg_signers")} if config.has_section("gpg_signers") else {}
-        signer = config.get("gpg", "signer_fingerprint").strip()
-        recipient = config.get("gpg", "recipient_fingerprint").strip()
+        signer = config.get("gpg", "signer_fingerprint", fallback="").strip()
+        recipient = config.get("gpg", "recipient_fingerprint", fallback="").strip()
+        keys = {name.upper(): fingerprint(key) for name, key in config.items("gpg")
+                if name not in ("signer_fingerprint", "recipient_fingerprint")}
         return AudioSettings(
             read_number(audio, "NOISE_SYMBOLS", range(33), "0–32"),
             read_number(audio, "CARRIER_FREQUENCY", range(900, 3101), "900–3100"),
@@ -81,6 +83,7 @@ def load_settings(directory):
             read_number(audio, "CHANNEL", range(5), "0–4"),
             read_number(audio, "MAPPING", (2, 4, 8, 16), "2, 4, 8, or 16"),
             gpg_signers=signers,
+            gpg_keys=keys,
             gpg_signer=fingerprint(signer) if signer else None,
             gpg_recipient=fingerprint(recipient) if recipient else None,
         )

@@ -188,26 +188,30 @@ The recipient's public key must be in your GnuPG keyring.
 ./rattlegram-audio listen
 ```
 
-To reuse fingerprints across sends, add this section to
-`~/.rattlegram-audio/config.ini` and replace the examples with your full
-fingerprints.
+To use names instead of fingerprints on the command line, add entries to
+`[gpg]` in `~/.rattlegram-audio/config.ini`. Replace the example fingerprints
+with the full fingerprints from your GnuPG keyring.
 
 ```ini
 [gpg]
-signer_fingerprint = 0123456789ABCDEF0123456789ABCDEF01234567
-recipient_fingerprint = FEDCBA9876543210FEDCBA9876543210FEDCBA98
+ZOYO = 0123456789ABCDEF0123456789ABCDEF01234567
+DL1ABC = FEDCBA9876543210FEDCBA9876543210FEDCBA98
 ```
 
-The settings supply defaults when you request signing or encryption. An
-explicit command-line fingerprint overrides the corresponding setting.
-For a positional message, use `--` before the message so it cannot be
-read as the optional fingerprint.
+With `-s` alone, the sender looks up its call sign in `[gpg]`.
+Use `-g NAME` to choose the recipient. Names are case-insensitive, and
+both options also accept a full fingerprint directly. Use `--` before
+a positional message when `-s` has no argument.
 
 ```sh
-./rattlegram-audio send -s -- "Signed message" DL1ABC
-./rattlegram-audio send -s -g -- "Signed and encrypted message" DL1ABC
-./rattlegram-audio send -s -g -f document.pdf DL1ABC
+./rattlegram-audio send -s -- "Signed message" ZOYO
+./rattlegram-audio send -s -g DL1ABC "Signed and encrypted message" ZOYO
+./rattlegram-audio send -s -g DL1ABC -f document.pdf ZOYO
 ```
+
+Existing `signer_fingerprint` and `recipient_fingerprint` entries in
+`[gpg]` still work as fallbacks. For receive-side signature requirements,
+configure `[gpg_signers]` separately.
 
 OpenPGP automatically enables fragmentation. Text can be compressed before
 GPG processing. File transfers disable both zlib and GPG compression.
@@ -253,8 +257,8 @@ incomplete transfers that have made no progress for 30 seconds.
 | --- | --- | --- |
 | `-c` | `--compress` | `send` |
 | `-e` | `--encrypt` | `send`, `listen` |
-| `-g` | `--gpg-encrypt [FINGERPRINT]` | `send` |
-| `-s` | `--gpg-sign [FINGERPRINT]` | `send` |
+| `-g` | `--gpg-encrypt [NAME_OR_FINGERPRINT]` | `send` |
+| `-s` | `--gpg-sign [NAME_OR_FINGERPRINT]` | `send` |
 | `-f` | `--file PATH` | `send` |
 | `-n` | `--no-length-limit` | `send` |
 | `-k` | `--key-file` | `listen` |
