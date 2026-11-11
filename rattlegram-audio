@@ -108,14 +108,14 @@ def listen(cipher, require_encryption, output, receive_dir, audio, verbose):
     return int(bool(recorder_running or recorder.returncode or decoder.returncode))
 
 
-def send_fingerprint(option, configured, setting):
+def send_fingerprint(option, keys, fallback, missing):
     if option is None:
         return None
-    if option:
-        return option
-    if configured is None:
-        raise ValueError(f"Set [gpg] {setting} in config.ini or pass a fingerprint explicitly.")
-    return configured
+    if not option:
+        if fallback is None:
+            raise ValueError(missing)
+        return fallback
+    return keys.get(option.upper(), option)
 
 
 def main():
@@ -129,10 +129,10 @@ def main():
     source.add_argument("message", nargs="?")
     source.add_argument("-f", "--file", type=Path, metavar="FILE",
                         help="Transfer a file byte for byte")
-    tx.add_argument("-g", "--gpg-encrypt", nargs="?", const="", metavar="FINGERPRINT",
-                    help="Encrypt to the specified or configured OpenPGP recipient")
-    tx.add_argument("-s", "--gpg-sign", nargs="?", const="", metavar="FINGERPRINT",
-                    help="Sign with the specified or configured OpenPGP key")
+    tx.add_argument("-g", "--gpg-encrypt", nargs="?", const="", metavar="NAME_OR_FINGERPRINT",
+                    help="Encrypt to an OpenPGP recipient by name or fingerprint")
+    tx.add_argument("-s", "--gpg-sign", nargs="?", const="", metavar="NAME_OR_FINGERPRINT",
+                    help="Sign by name or fingerprint, defaulting to the sender call sign")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     rx.add_argument("-v", "--verbose", action="store_true",
@@ -168,8 +168,13 @@ def main():
         if not shutil.which("pacat"):
             raise ValueError("pacat is missing. Install pulseaudio-utils.")
         if args.mode == "send":
-            signer = send_fingerprint(args.gpg_sign, audio.gpg_signer, "signer_fingerprint")
-            recipient = send_fingerprint(args.gpg_encrypt, audio.gpg_recipient, "recipient_fingerprint")
+            signer = send_fingerprint(
+                args.gpg_sign, audio.gpg_keys,
+                audio.gpg_keys.get(args.callsign.upper(), audio.gpg_signer),
+                f"Add {args.callsign.upper()} to [gpg] in config.ini or pass a signing fingerprint.")
+            recipient = send_fingerprint(
+                args.gpg_encrypt, audio.gpg_keys, audio.gpg_recipient,
+                "Specify a recipient name from [gpg] in config.ini or pass a fingerprint.")
             if args.file is not None:
                 with args.file.open("rb") as source_file:
                     data = source_file.read(MAX_FILE + 1)
