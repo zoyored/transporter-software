@@ -188,6 +188,27 @@ The recipient's public key must be in your GnuPG keyring.
 ./rattlegram-audio listen
 ```
 
+To reuse fingerprints across sends, add this section to
+`~/.rattlegram-audio/config.ini` and replace the examples with your full
+fingerprints.
+
+```ini
+[gpg]
+signer_fingerprint = 0123456789ABCDEF0123456789ABCDEF01234567
+recipient_fingerprint = FEDCBA9876543210FEDCBA9876543210FEDCBA98
+```
+
+The settings supply defaults when you request signing or encryption. An
+explicit command-line fingerprint overrides the corresponding setting.
+For a positional message, use `--` before the message so it cannot be
+read as the optional fingerprint.
+
+```sh
+./rattlegram-audio send -s -- "Signed message" DL1ABC
+./rattlegram-audio send -s -g -- "Signed and encrypted message" DL1ABC
+./rattlegram-audio send -s -g -f document.pdf DL1ABC
+```
+
 OpenPGP automatically enables fragmentation. Text can be compressed before
 GPG processing. File transfers disable both zlib and GPG compression.
 `--gpg-encrypt` and shared-key `--encrypt` are mutually exclusive when
@@ -232,8 +253,8 @@ incomplete transfers that have made no progress for 30 seconds.
 | --- | --- | --- |
 | `-c` | `--compress` | `send` |
 | `-e` | `--encrypt` | `send`, `listen` |
-| `-g` | `--gpg-encrypt FINGERPRINT` | `send` |
-| `-s` | `--gpg-sign FINGERPRINT` | `send` |
+| `-g` | `--gpg-encrypt [FINGERPRINT]` | `send` |
+| `-s` | `--gpg-sign [FINGERPRINT]` | `send` |
 | `-f` | `--file PATH` | `send` |
 | `-n` | `--no-length-limit` | `send` |
 | `-k` | `--key-file` | `listen` |

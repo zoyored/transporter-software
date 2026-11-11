@@ -108,6 +108,16 @@ def listen(cipher, require_encryption, output, receive_dir, audio, verbose):
     return int(bool(recorder_running or recorder.returncode or decoder.returncode))
 
 
+def send_fingerprint(option, configured, setting):
+    if option is None:
+        return None
+    if option:
+        return option
+    if configured is None:
+        raise ValueError(f"Set [gpg] {setting} in config.ini or pass a fingerprint explicitly.")
+    return configured
+
+
 def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_subparsers(dest="mode", required=True)
@@ -119,10 +129,10 @@ def main():
     source.add_argument("message", nargs="?")
     source.add_argument("-f", "--file", type=Path, metavar="FILE",
                         help="Transfer a file byte for byte")
-    tx.add_argument("-g", "--gpg-encrypt", metavar="FINGERPRINT",
-                    help="Encrypt to an OpenPGP recipient")
-    tx.add_argument("-s", "--gpg-sign", metavar="FINGERPRINT",
-                    help="Sign with an OpenPGP key")
+    tx.add_argument("-g", "--gpg-encrypt", nargs="?", const="", metavar="FINGERPRINT",
+                    help="Encrypt to the specified or configured OpenPGP recipient")
+    tx.add_argument("-s", "--gpg-sign", nargs="?", const="", metavar="FINGERPRINT",
+                    help="Sign with the specified or configured OpenPGP key")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     rx.add_argument("-v", "--verbose", action="store_true",
@@ -143,7 +153,7 @@ def main():
     if args.mode == "send" and args.file is not None and args.compress:
         tx.error("--compress cannot be used with --file.")
 
-    if args.mode == "send" and args.encrypt and args.gpg_encrypt:
+    if args.mode == "send" and args.encrypt and args.gpg_encrypt is not None:
         tx.error("--encrypt cannot be used with --gpg-encrypt.")
 
     try:
@@ -158,13 +168,15 @@ def main():
         if not shutil.which("pacat"):
             raise ValueError("pacat is missing. Install pulseaudio-utils.")
         if args.mode == "send":
+            signer = send_fingerprint(args.gpg_sign, audio.gpg_signer, "signer_fingerprint")
+            recipient = send_fingerprint(args.gpg_encrypt, audio.gpg_recipient, "recipient_fingerprint")
             if args.file is not None:
                 with args.file.open("rb") as source_file:
                     data = source_file.read(MAX_FILE + 1)
-                frames = list(file_packets(data, cipher, args.gpg_encrypt, args.gpg_sign))
+                frames = list(file_packets(data, cipher, recipient, signer))
             else:
                 frames = list(packets(args.message, args.compress, cipher, args.no_length_limit,
-                                      args.gpg_encrypt, args.gpg_sign))
+                                      recipient, signer))
             return send(frames, args.callsign, audio)
         receive_dir = args.receive_dir or directory / "receieved"
         return listen(cipher, args.encrypt, args.output, receive_dir, audio, args.verbose)

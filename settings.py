@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+from typing import Optional
 
 from gpg_transport import fingerprint
 
@@ -17,6 +18,10 @@ RATE = 8000
 BITS = 16
 CHANNEL = 0
 MAPPING = 4
+
+[gpg]
+signer_fingerprint =
+recipient_fingerprint =
 """
 
 
@@ -29,6 +34,8 @@ class AudioSettings:
     channel: int
     mapping: int
     gpg_signers: dict = field(default_factory=dict)
+    gpg_signer: Optional[str] = None
+    gpg_recipient: Optional[str] = None
 
     def codec_args(self):
         return list(map(str, (self.rate, self.bits, self.channel, self.mapping)))
@@ -64,6 +71,8 @@ def load_settings(directory):
         audio = config["audio"]
         signers = {call.upper(): fingerprint(key) for call, key in
                    config.items("gpg_signers")} if config.has_section("gpg_signers") else {}
+        signer = config.get("gpg", "signer_fingerprint").strip()
+        recipient = config.get("gpg", "recipient_fingerprint").strip()
         return AudioSettings(
             read_number(audio, "NOISE_SYMBOLS", range(33), "0–32"),
             read_number(audio, "CARRIER_FREQUENCY", range(900, 3101), "900–3100"),
@@ -71,7 +80,9 @@ def load_settings(directory):
             read_number(audio, "BITS", (8, 16, 24, 32), "8, 16, 24, or 32"),
             read_number(audio, "CHANNEL", range(5), "0–4"),
             read_number(audio, "MAPPING", (2, 4, 8, 16), "2, 4, 8, or 16"),
-            signers,
+            gpg_signers=signers,
+            gpg_signer=fingerprint(signer) if signer else None,
+            gpg_recipient=fingerprint(recipient) if recipient else None,
         )
     except (ValueError, configparser.Error) as exc:
         raise ValueError(f"Invalid configuration in {config_path}: {exc}") from exc
