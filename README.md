@@ -156,6 +156,31 @@ private key for signing. The listener uses its private key to decrypt and
 the signer's public key to verify. GnuPG handles private keys and passphrases
 through its normal keyring and agent.
 
+#### Create a key and find its fingerprint
+
+Run `gpg --full-generate-key` and select a key type that supports both
+signing and encryption, such as **RSA and RSA**. Follow the prompts to
+set an expiration date, enter a user ID, and protect the private key with
+a passphrase.
+
+```sh
+gpg --full-generate-key
+gpg --fingerprint
+```
+
+In the output, copy the entire hexadecimal fingerprint under the primary
+`pub` entry. A short key ID is insufficient. You can also list a specific
+key by passing its email address to `gpg --fingerprint`. An `[E]` subkey
+indicates encryption capability. GnuPG selects that subkey when you
+encrypt using the primary fingerprint.
+
+Use your own fingerprint as `signer_fingerprint` for signing and the
+recipient's fingerprint as `recipient_fingerprint` for encryption. To
+test encryption to yourself, use your own fingerprint for both.
+The recipient's public key must be in your GnuPG keyring.
+
+#### Send and receive
+
 ```sh
 ./rattlegram-audio send --gpg-encrypt "$recipient_fingerprint" "Private message" DL1ABC
 ./rattlegram-audio send --gpg-sign "$signer_fingerprint" "Signed message" DL1ABC
