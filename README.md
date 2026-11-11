@@ -149,6 +149,8 @@ compresses. A payload that does not fit in one packet requires
 ### OpenPGP
 
 Install GnuPG and use full fingerprints from your GnuPG keyring.
+Fingerprints may contain the spaces shown by GnuPG. When passing a grouped
+fingerprint on the command line, quote it so the shell passes it as one argument.
 The sender needs the recipient's public key for encryption and its own
 private key for signing. The listener uses its private key to decrypt and
 the signer's public key to verify. GnuPG handles private keys and passphrases

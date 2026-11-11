@@ -11,9 +11,13 @@ SIGNATURE_SIZE = struct.Struct("!I")
 
 
 def fingerprint(value):
-    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
-        raise ValueError("GPG keys must be specified by full fingerprint.")
-    return value.upper()
+    value = value.strip()
+    if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+        value = value[1:-1]
+    normalized = "".join(value.split())
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", normalized):
+        raise ValueError("Specify the full GPG fingerprint (40 or 64 hexadecimal digits).")
+    return normalized.upper()
 
 
 def run_gpg(arguments, data=b"", max_output=MAX_OVERHEAD):
