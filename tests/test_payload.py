@@ -1,23 +1,25 @@
 import base64
+import struct
 import unittest
 import zlib
 
+import base91
 from payload import CHUNK_SIZE, MAX_FILE, PREFIX, Reassembler, file_packets, packets
 
 
 def replace_byte(frame, offset):
-    data = bytearray(base64.b64decode(frame[len(PREFIX):]))
+    data = bytearray(base91.decode(frame[len(PREFIX):]))
     data[offset] ^= 1
-    return PREFIX + base64.b64encode(data)
+    return PREFIX + base91.encode(data)
 
 
 class PayloadTest(unittest.TestCase):
     def test_single_packet_capacity(self):
-        frame, = packets("x" * 106)
+        frame, = packets("x" * 117)
         self.assertLessEqual(len(frame), 170)
-        self.assertEqual(Reassembler().receive(frame).data, "x" * 106)
+        self.assertEqual(Reassembler().receive(frame).data, "x" * 117)
         with self.assertRaises(ValueError):
-            list(packets("x" * 107))
+            list(packets("x" * 118))
 
     def test_out_of_order_file_and_duplicate(self):
         data = bytes(range(256))
@@ -76,6 +78,21 @@ class PayloadTest(unittest.TestCase):
                                 (mixed, replace_byte(encrypted, 1))):
             with self.assertRaises(ValueError):
                 listener.receive(frame)
+
+    def test_base91_known_vector(self):
+        encoded = b">OwJh>Io0Tv!8PE"
+        self.assertEqual(base91.encode(b"Hello World!"), encoded)
+        self.assertEqual(base91.decode(encoded), b"Hello World!")
+
+    def test_rg2_base64(self):
+        prefix = b"~RG2:"
+        transfer_id = b"12345678"
+        header = struct.pack("!B8sHH", 0, transfer_id, 0, 1)
+        metadata = prefix + struct.pack("!B8sH", 0, transfer_id, 1)
+        data = b"RG2 text"
+        body = data + struct.pack("!I", zlib.crc32(metadata + data))
+        frame = prefix + base64.b64encode(header + body)
+        self.assertEqual(Reassembler().receive(frame).data, "RG2 text")
 
     def test_legacy_text_and_file(self):
         receiver = Reassembler()

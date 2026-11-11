@@ -59,7 +59,7 @@ into another command, such as `./rattlegram-audio listen | tee received.txt`.
 ./rattlegram-audio send "Hello from Rattlegram!" DL1ABC
 ```
 
-A plain text message can contain up to 106 UTF-8 bytes in one packet. For
+A plain text message can contain up to 117 UTF-8 bytes in one packet. For
 longer text, use `--no-length-limit`. The call sign must contain 1 to 9
 ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
 which plays them through the system's default audio output.
@@ -141,10 +141,44 @@ unencrypted traffic. Use `listen --key-file` to require the key at startup
 while accepting both kinds of traffic, or `listen --encrypt` to require
 authenticated transfers. The call sign and frame header remain visible.
 
-One RG2 packet holds up to 106 uncompressed plaintext bytes, or 82 with
-encryption. With compression, capacity depends on how well the text
+One RG3 packet holds up to 117 uncompressed plaintext bytes, or 93 with
+shared-key encryption. With compression, capacity depends on how well the text
 compresses. A payload that does not fit in one packet requires
 `--no-length-limit`.
+
+### OpenPGP
+
+Install GnuPG and use full fingerprints from your GnuPG keyring.
+The sender needs the recipient's public key for encryption and its own
+private key for signing. The listener uses its private key to decrypt and
+the signer's public key to verify. GnuPG handles private keys and passphrases
+through its normal keyring and agent.
+
+```sh
+./rattlegram-audio send --gpg-encrypt "$recipient_fingerprint" "Private message" DL1ABC
+./rattlegram-audio send --gpg-sign "$signer_fingerprint" "Signed message" DL1ABC
+./rattlegram-audio send --gpg-sign "$signer_fingerprint" --gpg-encrypt "$recipient_fingerprint" --file document.pdf DL1ABC
+./rattlegram-audio listen
+```
+
+OpenPGP automatically enables fragmentation. Text can be compressed before
+GPG processing. File transfers disable both zlib and GPG compression.
+`--gpg-encrypt` and shared-key `--encrypt` are mutually exclusive when
+sending. `listen --encrypt` still requires the shared-key mode.
+
+The listener verifies announced signatures before printing or saving
+anything and reports the verified fingerprint on stderr. To require a
+specific signature for a call sign, add its full fingerprint to
+`~/.rattlegram-audio/config.ini`.
+
+```ini
+[gpg_signers]
+DL1ABC = 0123456789ABCDEF0123456789ABCDEF01234567
+```
+
+The example fingerprint is a placeholder. With a pin, unsigned transfers
+and transfers signed by other keys are rejected for that call sign. A
+valid signature without a pin identifies the key that signed the data.
 
 ## Longer messages
 
@@ -171,6 +205,8 @@ incomplete transfers that have made no progress for 30 seconds.
 | --- | --- | --- |
 | `-c` | `--compress` | `send` |
 | `-e` | `--encrypt` | `send`, `listen` |
+| `-g` | `--gpg-encrypt FINGERPRINT` | `send` |
+| `-s` | `--gpg-sign FINGERPRINT` | `send` |
 | `-f` | `--file PATH` | `send` |
 | `-n` | `--no-length-limit` | `send` |
 | `-k` | `--key-file` | `listen` |
@@ -179,39 +215,41 @@ incomplete transfers that have made no progress for 30 seconds.
 | `-v` | `--verbose` | `listen` |
 | `-h` | `--help` | All commands |
 
-## RG2 wire format
+## RG3 wire format
 
-New sends use RG2. The listener also accepts raw Rattlegram text and legacy
-RG1 text, file, encryption, and fragmentation formats. Older listeners
-need an upgrade to interpret RG2.
+New sends use RG3. The listener also accepts RG2 Base64 packets, legacy RG1
+packets, and raw Rattlegram text. Older listeners need an upgrade to read RG3.
 
-Each radio payload is the five ASCII bytes `~RG2:` followed by standard
-padded Base64 with no line breaks. The decoded bytes contain a 13-byte
-header followed by up to 110 bytes of the transfer body. Integers are
-unsigned and big-endian.
+Each radio payload is the five ASCII bytes `~RG3:` followed by standard
+basE91 with no padding or line breaks. The decoded bytes contain a 13-byte
+header and up to 121 bytes of the transfer body. RG2 used 110 body bytes per
+packet. Integers are unsigned and big-endian.
 
 | Field | Size | Meaning |
 | --- | ---: | --- |
-| Flags | 1 byte | `0x01` compressed, `0x02` encrypted, `0x04` file. Other bits are reserved. |
+| Flags | 1 byte | `0x01` compressed, `0x02` shared-key encrypted, `0x04` file, `0x08` GPG encrypted, `0x10` GPG signed. Other bits are reserved. |
 | Transfer ID | 8 bytes | Random bytes shared by all fragments of a transfer. |
 | Fragment index | 2 bytes | Zero-based index. |
 | Fragment count | 2 bytes | Total fragments. One indicates a single-packet transfer. |
 
-The sender applies zlib compression to text when requested. Then it protects
-the entire body before splitting it into 110-byte chunks. All chunks except
-the last have exactly 110 bytes. Files cannot set the compressed flag.
+The sender applies optional zlib compression to text, processes any
+OpenPGP options, and then protects the body before splitting it into
+121-byte chunks. All chunks except the last have exactly 121 bytes.
 
-The common metadata bytes are the literal `~RG2:` prefix, flags, transfer ID,
-and big-endian fragment count in that order. The fragment index is used to
-restore the original byte order.
+For OpenPGP, the inner metadata is the literal `~RG3:` prefix, flags, and
+transfer ID, followed by the payload. Signing prepends a four-byte
+signature length and a binary detached signature over the inner metadata
+and payload. GPG encryption wraps the result after signing. The receiver
+checks that the inner metadata matches the radio header.
 
-- **Unencrypted** bodies contain the payload followed by a big-endian
-  CRC-32 over the common metadata and payload. This detects accidental
-  corruption.
-- **Encrypted** bodies contain a random 12-byte nonce followed by
-  ChaCha20-Poly1305 ciphertext and its 16-byte tag. The common metadata
-  is authenticated as associated data.
+The outer metadata consists of the literal prefix, flags, transfer ID,
+and fragment count in that order. The fragment index restores byte order.
 
-The receiver bounds reassembly, checks consistent headers, and verifies
-the full transfer before decompressing, printing, or saving it. Fragments
-may arrive out of order. No partial files are published.
+- With shared-key encryption, the body is a 12-byte nonce followed by
+  ChaCha20-Poly1305 ciphertext and a 16-byte tag. The outer metadata is
+  authenticated as associated data.
+- Otherwise, the body ends with a big-endian CRC-32 over the outer metadata
+  and the body bytes preceding the CRC. This detects accidental corruption.
+
+The receiver bounds reassembly, accepts out-of-order fragments, and
+validates the full transfer before printing or saving it.
