@@ -9,18 +9,26 @@ import zlib
 from functools import partial
 from typing import NamedTuple, Optional, Union
 
+import base91
+import gpg_transport
+
 MAX_PAYLOAD = 170
 LEGACY_PREFIX = b"~RG1"
-PREFIX = b"~RG2:"
+RG2_PREFIX = b"~RG2:"
+PREFIX = b"~RG3:"
 VERSION_PREFIX = re.compile(rb"~RG[0-9]+:")
 HEADER = struct.Struct("!B8sHH")
 AUTH_HEADER = struct.Struct("!B8sH")
 CRC = struct.Struct("!I")
-CHUNK_SIZE = (MAX_PAYLOAD - len(PREFIX)) // 4 * 3 - HEADER.size
+RG2_CHUNK_SIZE = 110
+CHUNK_SIZE = 121
 COMPRESSED = 1
 ENCRYPTED = 2
 FILE = 4
-KNOWN_FLAGS = COMPRESSED | ENCRYPTED | FILE
+RG2_FLAGS = COMPRESSED | ENCRYPTED | FILE
+GPG_ENCRYPTED = 8
+GPG_SIGNED = 16
+GPG_FLAGS = GPG_ENCRYPTED | GPG_SIGNED
 NONCE_SIZE = 12
 TAG_SIZE = 16
 MAX_MESSAGE = 64 * 1024
@@ -98,7 +106,8 @@ def decode_text(data, flags, limit):
     return data.decode("utf-8")
 
 
-def packets(message, compress=False, cipher=None, fragment=False):
+def packets(message, compress=False, cipher=None, fragment=False, recipient=None, signer=None):
+    fragment = fragment or bool(recipient or signer)
     data = message.encode("utf-8")
     limit = MAX_MESSAGE if fragment else MAX_PAYLOAD
     if not 1 <= len(data) <= limit or b"\0" in data:
@@ -106,24 +115,39 @@ def packets(message, compress=False, cipher=None, fragment=False):
     flags = COMPRESSED if compress else 0
     if compress:
         data = zlib.compress(data, level=9)
-    return encode_packets(data, flags, cipher, fragment)
+    return encode_packets(data, flags, cipher, fragment, recipient, signer)
 
 
-def file_packets(data, cipher=None):
+def file_packets(data, cipher=None, recipient=None, signer=None):
     if len(data) > MAX_FILE:
         raise ValueError(f"File exceeds the {MAX_FILE}-byte limit.")
-    return encode_packets(data, FILE, cipher, fragment=True)
+    return encode_packets(data, FILE, cipher, True, recipient, signer)
 
 
-def encode_packets(data, flags, cipher, fragment):
+def gpg_metadata(flags, transfer_id):
+    return PREFIX + bytes((flags,)) + transfer_id
+
+
+def encode_packets(data, flags, cipher, fragment, recipient, signer):
     if cipher is not None:
+        if recipient:
+            raise ValueError("Choose either shared-key or GPG encryption.")
         flags |= ENCRYPTED
+    if recipient:
+        flags |= GPG_ENCRYPTED
+    if signer:
+        flags |= GPG_SIGNED
+
+    transfer_id = os.urandom(8)
+    if flags & GPG_FLAGS:
+        limit = (MAX_FILE if flags & FILE else MAX_WIRE) + gpg_transport.MAX_OVERHEAD
+        data = gpg_transport.protect(data, gpg_metadata(flags, transfer_id),
+                                     recipient, signer, limit)
     overhead = NONCE_SIZE + TAG_SIZE if cipher is not None else CRC.size
     count = (len(data) + overhead + CHUNK_SIZE - 1) // CHUNK_SIZE
     if count > 1 and not fragment:
         raise ValueError("Message does not fit in one radio packet. Use --no-length-limit.")
 
-    transfer_id = os.urandom(8)
     aad = PREFIX + AUTH_HEADER.pack(flags, transfer_id, count)
     if cipher is not None:
         body = encrypt_data(data, aad, cipher)
@@ -133,12 +157,13 @@ def encode_packets(data, flags, cipher, fragment):
     for index in range(count):
         start = index * CHUNK_SIZE
         header = HEADER.pack(flags, transfer_id, index, count)
-        yield PREFIX + base64.b64encode(header + body[start:start + CHUNK_SIZE])
+        yield PREFIX + base91.encode(header + body[start:start + CHUNK_SIZE])
 
 
 class Transfer(NamedTuple):
     data: Union[str, bytes]
     transfer_id: Optional[str] = None
+    signers: tuple = ()
 
 
 def unpack_legacy_file(packet, cipher):
@@ -157,30 +182,43 @@ def unpack_legacy_file(packet, cipher):
     return data
 
 
-def decode_header(packet):
-    encoded = packet[len(PREFIX):]
-    frame = base64.b64decode(encoded, validate=True)
-    if base64.b64encode(frame) != encoded or len(frame) <= HEADER.size:
-        raise ValueError("Invalid RG2 packet header.")
+def decode_header(packet, prefix):
+    encoded = packet[len(prefix):]
+    if prefix == RG2_PREFIX:
+        frame = base64.b64decode(encoded, validate=True)
+        canonical = base64.b64encode(frame)
+        allowed = RG2_FLAGS
+    else:
+        frame = base91.decode(encoded)
+        canonical = base91.encode(frame)
+        allowed = RG2_FLAGS | GPG_FLAGS
+    if canonical != encoded or len(frame) <= HEADER.size:
+        raise ValueError("Invalid radio packet header.")
     flags, transfer_id, index, count = HEADER.unpack_from(frame)
-    if flags & ~KNOWN_FLAGS or (flags & FILE and flags & COMPRESSED):
-        raise ValueError("Invalid RG2 flags.")
+    if (flags & ~allowed or (flags & FILE and flags & COMPRESSED) or
+            (flags & ENCRYPTED and flags & GPG_ENCRYPTED)):
+        raise ValueError("Invalid radio packet flags.")
     return flags, transfer_id, index, count, frame[HEADER.size:]
 
 
-def decode_body(body, flags, transfer_id, count, cipher):
-    aad = PREFIX + AUTH_HEADER.pack(flags, transfer_id, count)
+def decode_body(body, prefix, flags, transfer_id, count, cipher):
+    aad = prefix + AUTH_HEADER.pack(flags, transfer_id, count)
     if flags & ENCRYPTED:
         data = decrypt_data(body, aad, cipher)
     else:
         data, checksum = body[:-CRC.size], body[-CRC.size:]
         if checksum != CRC.pack(zlib.crc32(data, zlib.crc32(aad))):
             raise ValueError("Checksum mismatch.")
+    signers = ()
+    if flags & GPG_FLAGS:
+        limit = (MAX_FILE if flags & FILE else MAX_WIRE) + gpg_transport.MAX_OVERHEAD
+        data, signers = gpg_transport.unprotect(data, gpg_metadata(flags, transfer_id),
+                                                flags & GPG_ENCRYPTED, flags & GPG_SIGNED, limit)
     if flags & FILE:
         if len(data) > MAX_FILE:
             raise ValueError("Received file exceeds the size limit.")
-        return Transfer(data, transfer_id.hex())
-    return Transfer(decode_text(data, flags, MAX_MESSAGE))
+        return Transfer(data, transfer_id.hex(), signers)
+    return Transfer(decode_text(data, flags, MAX_MESSAGE), signers=signers)
 
 
 class Reassembler:
@@ -202,17 +240,21 @@ class Reassembler:
     def receive(self, packet, sender=None):
         if not 1 <= len(packet) <= MAX_PAYLOAD:
             raise ValueError("Invalid radio packet length.")
-        if packet.startswith(PREFIX):
-            flags, transfer_id, index, count, chunk = decode_header(packet)
+        prefix = packet[:len(PREFIX)]
+        if prefix in (PREFIX, RG2_PREFIX):
+            flags, transfer_id, index, count, chunk = decode_header(packet, prefix)
+            chunk_size = RG2_CHUNK_SIZE if prefix == RG2_PREFIX else CHUNK_SIZE
             cipher = self.select_cipher(flags & ENCRYPTED)
             limit = (MAX_FILE + NONCE_SIZE + TAG_SIZE) if flags & FILE else MAX_WIRE
+            if flags & GPG_FLAGS:
+                limit += gpg_transport.MAX_OVERHEAD + CRC.size
             start = None
             if index == 0 and flags & FILE and self.on_file_start is not None:
                 start = partial(self.on_file_start, sender, transfer_id.hex(), count)
-            body = self.assemble((sender, PREFIX, transfer_id), flags, index, count,
-                                 chunk, CHUNK_SIZE, limit, start)
+            body = self.assemble((sender, prefix, transfer_id), flags, index, count,
+                                 chunk, chunk_size, limit, start)
             if body is not None:
-                return decode_body(body, flags, transfer_id, count, cipher)
+                return decode_body(body, prefix, flags, transfer_id, count, cipher)
             return None
         if packet.startswith(LEGACY_FRAGMENT_PREFIX):
             header = LEGACY_FRAGMENT_HEADER.match(packet)

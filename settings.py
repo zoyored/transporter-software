@@ -1,12 +1,14 @@
 """Load the local audio settings and validate the shared key."""
 
 import configparser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import errno
 import os
 from pathlib import Path
 import stat
 import tempfile
+
+from gpg_transport import fingerprint
 
 DEFAULT_CONFIG = """[audio]
 NOISE_SYMBOLS = 1
@@ -26,6 +28,7 @@ class AudioSettings:
     bits: int
     channel: int
     mapping: int
+    gpg_signers: dict = field(default_factory=dict)
 
     def codec_args(self):
         return list(map(str, (self.rate, self.bits, self.channel, self.mapping)))
@@ -59,6 +62,8 @@ def load_settings(directory):
         with config_path.open(encoding="utf-8") as source:
             config.read_file(source)
         audio = config["audio"]
+        signers = {call.upper(): fingerprint(key) for call, key in
+                   config.items("gpg_signers")} if config.has_section("gpg_signers") else {}
         return AudioSettings(
             read_number(audio, "NOISE_SYMBOLS", range(33), "0–32"),
             read_number(audio, "CARRIER_FREQUENCY", range(900, 3101), "900–3100"),
@@ -66,6 +71,7 @@ def load_settings(directory):
             read_number(audio, "BITS", (8, 16, 24, 32), "8, 16, 24, or 32"),
             read_number(audio, "CHANNEL", range(5), "0–4"),
             read_number(audio, "MAPPING", (2, 4, 8, 16), "2, 4, 8, or 16"),
+            signers,
         )
     except (ValueError, configparser.Error) as exc:
         raise ValueError(f"Invalid configuration in {config_path}: {exc}") from exc

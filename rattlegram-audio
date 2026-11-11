@@ -71,6 +71,13 @@ def listen(cipher, require_encryption, output, receive_dir, audio, verbose):
                             continue
                         if transfer is None:
                             continue
+                        expected = audio.gpg_signers.get(sender)
+                        if expected and expected not in transfer.signers:
+                            print(f"Transfer rejected: {sender} must use the configured GPG signing key.",
+                                  file=sys.stderr)
+                            continue
+                        if transfer.signers:
+                            print(f"Valid GPG signature: {transfer.signers[0]}", file=sys.stderr)
                         if isinstance(transfer.data, bytes):
                             if output is not None:
                                 save_file(output, transfer.data)
@@ -111,7 +118,11 @@ def main():
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("-f", "--file", type=Path, metavar="FILE",
-                        help="Transfer a file byte for byte using Base64")
+                        help="Transfer a file byte for byte")
+    tx.add_argument("-g", "--gpg-encrypt", metavar="FINGERPRINT",
+                    help="Encrypt to an OpenPGP recipient")
+    tx.add_argument("-s", "--gpg-sign", metavar="FINGERPRINT",
+                    help="Sign with an OpenPGP key")
     tx.add_argument("callsign")
     rx = modes.add_parser("listen")
     rx.add_argument("-v", "--verbose", action="store_true",
@@ -132,6 +143,9 @@ def main():
     if args.mode == "send" and args.file is not None and args.compress:
         tx.error("--compress cannot be used with --file.")
 
+    if args.mode == "send" and args.encrypt and args.gpg_encrypt:
+        tx.error("--encrypt cannot be used with --gpg-encrypt.")
+
     try:
         directory = Path.home() / ".rattlegram-audio"
         audio = load_settings(directory)
@@ -147,9 +161,10 @@ def main():
             if args.file is not None:
                 with args.file.open("rb") as source_file:
                     data = source_file.read(MAX_FILE + 1)
-                frames = list(file_packets(data, cipher))
+                frames = list(file_packets(data, cipher, args.gpg_encrypt, args.gpg_sign))
             else:
-                frames = list(packets(args.message, args.compress, cipher, args.no_length_limit))
+                frames = list(packets(args.message, args.compress, cipher, args.no_length_limit,
+                                      args.gpg_encrypt, args.gpg_sign))
             return send(frames, args.callsign, audio)
         receive_dir = args.receive_dir or directory / "receieved"
         return listen(cipher, args.encrypt, args.output, receive_dir, audio, args.verbose)
