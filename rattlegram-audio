@@ -72,12 +72,14 @@ def listen(cipher, require_encryption, output, receive_dir, audio, verbose):
                         if transfer is None:
                             continue
                         expected = audio.gpg_signers.get(sender)
-                        if expected and expected not in transfer.signers:
+                        if transfer.signers and expected and expected not in transfer.signers:
                             print(f"Transfer rejected: {sender} must use the configured GPG signing key.",
                                   file=sys.stderr)
                             continue
                         if transfer.signers:
                             print(f"Valid GPG signature: {transfer.signers[0]}", file=sys.stderr)
+                        elif expected:
+                            print(f"Unsigned transfer from {sender}", file=sys.stderr)
                         if isinstance(transfer.data, bytes):
                             if output is not None:
                                 save_file(output, transfer.data)

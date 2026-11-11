@@ -219,8 +219,8 @@ GPG processing. File transfers disable both zlib and GPG compression.
 sending. `listen --encrypt` still requires the shared-key mode.
 
 The listener verifies announced signatures before printing or saving
-anything and reports the verified fingerprint on stderr. To require a
-specific signature for a call sign, add its full fingerprint to
+anything and reports the verified fingerprint on stderr. To check signed
+transfers for a call sign against a specific key, add its full fingerprint to
 `~/.rattlegram-audio/config.ini`.
 
 ```ini
@@ -228,9 +228,10 @@ specific signature for a call sign, add its full fingerprint to
 DL1ABC = 0123456789ABCDEF0123456789ABCDEF01234567
 ```
 
-The example fingerprint is a placeholder. With a pin, unsigned transfers
-and transfers signed by other keys are rejected for that call sign. A
-valid signature without a pin identifies the key that signed the data.
+The example fingerprint is a placeholder. Signed transfers for that call
+sign must match the configured fingerprint. Unsigned transfers are accepted
+and identified on stderr when a fingerprint is configured. A valid
+signature without a pin identifies the key that signed the data.
 
 ## Longer messages
 
