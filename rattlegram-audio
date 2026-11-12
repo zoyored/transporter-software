@@ -13,6 +13,21 @@ from settings import load_cipher, load_settings
 BIN = Path(__file__).resolve().parent / "bin"
 
 
+def report_send_duration(packet_count, audio):
+    payload_symbols = 8 if audio.mapping == 2 else 4
+    # Each packet has two sync/header symbols and two trailing silence blocks.
+    samples_per_symbol = 1440 * audio.rate // 8000
+    samples = packet_count * (audio.noise_symbols + payload_symbols + 4) * samples_per_symbol
+    seconds = samples / audio.rate
+    if seconds >= 60:
+        minutes, remainder = divmod(seconds, 60)
+        duration = f"{int(minutes)} min {remainder:.2f} s"
+    else:
+        duration = f"{seconds:.2f} s"
+    noun = "packet" if packet_count == 1 else "packets"
+    print(f"Transmission: {packet_count} {noun}, {duration} of audio", file=sys.stderr)
+
+
 def send(frames, callsign, audio):
     codec_args = audio.codec_args() + [str(audio.noise_symbols), str(audio.carrier_frequency)]
     with subprocess.Popen(audio.pacat_args() + ["--playback", "--device=@DEFAULT_SINK@"],
@@ -129,6 +144,8 @@ def main():
                     help="Split long messages across multiple packets")
     tx.add_argument("-p", "--parity", action="store_true",
                     help="Add one recovery packet to a fragmented transfer")
+    tx.add_argument("--dry-run", action="store_true",
+                    help="Calculate the transmission duration without playing audio")
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("-f", "--file", type=Path, metavar="FILE",
@@ -167,11 +184,16 @@ def main():
         if args.mode == "listen":
             use_key = use_key or args.key_file or os.path.lexists(directory / "key")
         cipher = load_cipher(directory) if use_key else None
-        if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
-            raise ValueError("Run make in the program directory first.")
-        if not shutil.which("pacat"):
-            raise ValueError("pacat is missing. Install pulseaudio-utils.")
+        dry_run = args.mode == "send" and args.dry_run
+        if not dry_run:
+            if not os.access(BIN / f"{args.mode}-pcm", os.X_OK):
+                raise ValueError("Run make in the program directory first.")
+            if not shutil.which("pacat"):
+                raise ValueError("pacat is missing. Install pulseaudio-utils.")
         if args.mode == "send":
+            if not (1 <= len(args.callsign) <= 9 and args.callsign.isascii()
+                    and args.callsign.isalnum()):
+                raise ValueError("Call sign must contain 1 to 9 ASCII letters or digits.")
             signer = send_fingerprint(
                 args.gpg_sign, audio.gpg_keys,
                 audio.gpg_keys.get(args.callsign.upper(), audio.gpg_signer),
@@ -186,6 +208,9 @@ def main():
             else:
                 frames = list(packets(args.message, args.compress, cipher, args.no_length_limit,
                                       recipient, signer, parity=args.parity))
+            report_send_duration(len(frames), audio)
+            if dry_run:
+                return 0
             return send(frames, args.callsign, audio)
         receive_dir = args.receive_dir or directory / "receieved"
         return listen(cipher, args.encrypt, args.output, receive_dir, audio, args.verbose)

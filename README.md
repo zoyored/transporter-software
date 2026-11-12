@@ -64,6 +64,17 @@ longer text, use `--no-length-limit`. The call sign must contain 1 to 9
 ASCII letters or digits. The sender pipes PCM samples directly to `pacat`,
 which plays them through the system's default audio output.
 
+Before playback, `send` reports the packet count and audio duration on
+stderr. Use `--dry-run` to see the same calculation without playing audio.
+
+```sh
+./rattlegram-audio send --dry-run -p -c -s DL1ABC "Signed channel test" DL1ABC
+```
+
+The calculation uses the actual packets after compression, signing,
+encryption and optional parity. It measures the audio itself. Preparation
+and audio device startup can add to the elapsed time.
+
 ### Transfer a file
 
 Start the receiver, then send the file.
