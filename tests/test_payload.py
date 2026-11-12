@@ -10,7 +10,7 @@ from payload import CHUNK_SIZE, MAX_FILE, PREFIX, Reassembler, file_packets, pac
 def replace_byte(frame, offset):
     data = bytearray(base91.decode(frame[len(PREFIX):]))
     data[offset] ^= 1
-    return PREFIX + base91.encode(data)
+    return frame[:len(PREFIX)] + base91.encode(data)
 
 
 class PayloadTest(unittest.TestCase):
@@ -106,6 +106,34 @@ class PayloadTest(unittest.TestCase):
                      for i, chunk in enumerate((body[:140], body[140:]))]
         self.assertIsNone(receiver.receive(fragments[0]))
         self.assertEqual(receiver.receive(fragments[1]).data, data)
+
+    def test_parity_recovers_each_missing_packet(self):
+        data = bytes(range(256)) * 2
+        frames = list(file_packets(data, parity=True))
+        self.assertTrue(all(len(frame) <= 170 for frame in frames))
+        for dropped in range(len(frames)):
+            for sequence in (frames, list(reversed(frames))):
+                with self.subTest(dropped=dropped, parity_first=sequence is not frames):
+                    receiver = Reassembler()
+                    result = []
+                    for frame in sequence:
+                        if frame != frames[dropped]:
+                            transfer = receiver.receive(frame)
+                            if transfer is not None:
+                                result.append(transfer.data)
+                    self.assertEqual(result, [data])
+
+    def test_damaged_parity_does_not_discard_good_fragments(self):
+        data = bytes(range(256)) * 2
+        *frames, parity = file_packets(data, parity=True)
+        receiver = Reassembler()
+        for frame in frames[:-1]:
+            self.assertIsNone(receiver.receive(frame))
+        damaged = replace_byte(parity, 13)
+        with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
+            receiver.receive(damaged)
+        self.assertEqual(receiver.receive(frames[-1]).data, data)
+        self.assertIsNone(receiver.receive(parity))
 
     def test_file_size_limit(self):
         with self.assertRaises(ValueError):

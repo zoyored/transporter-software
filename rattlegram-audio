@@ -127,6 +127,8 @@ def main():
     tx.add_argument("-c", "--compress", action="store_true", help="Enable zlib compression")
     tx.add_argument("-n", "--no-length-limit", action="store_true",
                     help="Split long messages across multiple packets")
+    tx.add_argument("--parity", action="store_true",
+                    help="Add one recovery packet to a fragmented transfer")
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
     source.add_argument("-f", "--file", type=Path, metavar="FILE",
@@ -180,10 +182,10 @@ def main():
             if args.file is not None:
                 with args.file.open("rb") as source_file:
                     data = source_file.read(MAX_FILE + 1)
-                frames = list(file_packets(data, cipher, recipient, signer))
+                frames = list(file_packets(data, cipher, recipient, signer, parity=args.parity))
             else:
                 frames = list(packets(args.message, args.compress, cipher, args.no_length_limit,
-                                      recipient, signer))
+                                      recipient, signer, parity=args.parity))
             return send(frames, args.callsign, audio)
         receive_dir = args.receive_dir or directory / "receieved"
         return listen(cipher, args.encrypt, args.output, receive_dir, audio, args.verbose)
