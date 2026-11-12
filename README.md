@@ -252,6 +252,22 @@ handles up to 64 KiB of UTF-8 text per message. Missing fragments are never
 requested again. When another fragment arrives, the receiver discards any
 incomplete transfers that have made no progress for 30 seconds.
 
+## Recover a missing packet
+
+Add `--parity` when sending a fragmented message or file. The sender adds
+one XOR parity packet for the entire transfer. The listener can recover
+one missing data packet if it receives the parity packet and all other
+data packets. Single-packet transfers send only their data packet.
+
+```sh
+./rattlegram-audio send --parity -c -s ZOYO "Signed channel test" ZOYO
+```
+
+Six data packets plus one parity packet add roughly 17% to the packet
+count. The listener still applies the usual integrity and signature
+checks after recovery. The listener needs parity support to use the extra
+packet. The data packets use the regular RG3 format.
+
 ## Short options
 
 | Short | Long | Command |
@@ -306,3 +322,12 @@ and fragment count in that order. The fragment index restores byte order.
 
 The receiver bounds reassembly, accepts out-of-order fragments, and
 validates the full transfer before printing or saving it.
+
+### Parity packet
+
+The optional parity packet uses `~RG4:` followed by basE91. The header
+contains the RG3 flags, transfer ID, final data chunk length in place
+of the fragment index, and data fragment count. The body is the XOR of
+all 121-byte data chunks, with the final chunk padded with zero bytes.
+The receiver restores the original final chunk length before checking
+the completed transfer.
