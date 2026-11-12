@@ -127,7 +127,7 @@ def main():
     tx.add_argument("-c", "--compress", action="store_true", help="Enable zlib compression")
     tx.add_argument("-n", "--no-length-limit", action="store_true",
                     help="Split long messages across multiple packets")
-    tx.add_argument("--parity", action="store_true",
+    tx.add_argument("-p", "--parity", action="store_true",
                     help="Add one recovery packet to a fragmented transfer")
     source = tx.add_mutually_exclusive_group(required=True)
     source.add_argument("message", nargs="?")
