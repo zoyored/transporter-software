@@ -257,7 +257,7 @@ incomplete transfers that have made no progress for 30 seconds.
 
 ## Recover a missing packet
 
-Add `--parity` when sending a fragmented message or file. The sender adds
+Add `-p` or `--parity` when sending a fragmented message or file. The sender adds
 one XOR parity packet for the entire transfer. The listener can recover
 one missing data packet if it receives the parity packet and all other
 data packets. Single-packet transfers send only their data packet.
@@ -281,6 +281,7 @@ packet. The data packets use the regular RG3 format.
 | `-s` | `--gpg-sign [NAME_OR_FINGERPRINT]` | `send` |
 | `-f` | `--file PATH` | `send` |
 | `-n` | `--no-length-limit` | `send` |
+| `-p` | `--parity` | `send` |
 | `-k` | `--key-file` | `listen` |
 | `-o` | `--output PATH` | `listen` |
 | `-d` | `--receive-dir DIR` | `listen` |
