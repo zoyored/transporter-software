@@ -189,24 +189,24 @@ The recipient's public key must be in your GnuPG keyring.
 ```
 
 To use names instead of fingerprints on the command line, add entries to
-`[gpg]` in `~/.rattlegram-audio/config.ini`. Replace the example fingerprints
-with the full fingerprints from your GnuPG keyring.
+`[gpg]` in `~/.rattlegram-audio/config.ini`. Replace the example fingerprint
+with the full fingerprint from your GnuPG keyring.
 
 ```ini
 [gpg]
-ZOYO = 0123456789ABCDEF0123456789ABCDEF01234567
-DL1ABC = FEDCBA9876543210FEDCBA9876543210FEDCBA98
+DL1ABC = 0123456789ABCDEF0123456789ABCDEF01234567
 ```
 
 With `-s` alone, the sender looks up its call sign in `[gpg]`.
 Use `-g NAME` to choose the recipient. Names are case-insensitive, and
 both options also accept a full fingerprint directly. Use `--` before
-a positional message when `-s` has no argument.
+a positional message when `-s` has no argument. The encryption examples
+below send to your own key.
 
 ```sh
-./rattlegram-audio send -s -- "Signed message" ZOYO
-./rattlegram-audio send -s -g DL1ABC "Signed and encrypted message" ZOYO
-./rattlegram-audio send -s -g DL1ABC -f document.pdf ZOYO
+./rattlegram-audio send -s -- "Signed message" DL1ABC
+./rattlegram-audio send -s -g DL1ABC "Signed and encrypted message" DL1ABC
+./rattlegram-audio send -s -g DL1ABC -f document.pdf DL1ABC
 ```
 
 Existing `signer_fingerprint` and `recipient_fingerprint` entries in
@@ -260,7 +260,7 @@ one missing data packet if it receives the parity packet and all other
 data packets. Single-packet transfers send only their data packet.
 
 ```sh
-./rattlegram-audio send --parity -c -s ZOYO "Signed channel test" ZOYO
+./rattlegram-audio send --parity -c -s DL1ABC "Signed channel test" DL1ABC
 ```
 
 Six data packets plus one parity packet add roughly 17% to the packet
