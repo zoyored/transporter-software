@@ -69,10 +69,10 @@ which plays them through the system's default audio output.
 Start the receiver, then send the file.
 
 ```sh
-# On the receiver
+# On DN1ABC (receiver)
 ./rattlegram-audio listen
 
-# On the sender
+# On DL1ABC (sender)
 ./rattlegram-audio send --file "document.pdf" DL1ABC
 ```
 
@@ -182,31 +182,34 @@ The recipient's public key must be in your GnuPG keyring.
 #### Send and receive
 
 ```sh
+# On DL1ABC (sender), use DN1ABC's fingerprint as recipient_fingerprint
 ./rattlegram-audio send --gpg-encrypt "$recipient_fingerprint" "Private message" DL1ABC
 ./rattlegram-audio send --gpg-sign "$signer_fingerprint" "Signed message" DL1ABC
 ./rattlegram-audio send --gpg-sign "$signer_fingerprint" --gpg-encrypt "$recipient_fingerprint" --file document.pdf DL1ABC
+
+# On DN1ABC (receiver)
 ./rattlegram-audio listen
 ```
 
 To use names instead of fingerprints on the command line, add entries to
-`[gpg]` in `~/.rattlegram-audio/config.ini`. Replace the example fingerprint
-with the full fingerprint from your GnuPG keyring.
+`[gpg]` in `~/.rattlegram-audio/config.ini`. Replace the example fingerprints
+with the full fingerprints from your GnuPG keyring.
 
 ```ini
 [gpg]
 DL1ABC = 0123456789ABCDEF0123456789ABCDEF01234567
+DN1ABC = FEDCBA9876543210FEDCBA9876543210FEDCBA98
 ```
 
 With `-s` alone, the sender looks up its call sign in `[gpg]`.
 Use `-g NAME` to choose the recipient. Names are case-insensitive, and
 both options also accept a full fingerprint directly. Use `--` before
-a positional message when `-s` has no argument. The encryption examples
-below send to your own key.
+a positional message when `-s` has no argument.
 
 ```sh
 ./rattlegram-audio send -s -- "Signed message" DL1ABC
-./rattlegram-audio send -s -g DL1ABC "Signed and encrypted message" DL1ABC
-./rattlegram-audio send -s -g DL1ABC -f document.pdf DL1ABC
+./rattlegram-audio send -s -g DN1ABC "Signed and encrypted message" DL1ABC
+./rattlegram-audio send -s -g DN1ABC -f document.pdf DL1ABC
 ```
 
 Existing `signer_fingerprint` and `recipient_fingerprint` entries in
